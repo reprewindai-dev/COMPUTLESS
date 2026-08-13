@@ -1,0 +1,6 @@
+{
+  "name": "Computless Cloud",
+  "description": "Portable, decentralized cloud substrate and agent governance platform with HRMR routing, CAPPO authority, and PGL evidence ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
