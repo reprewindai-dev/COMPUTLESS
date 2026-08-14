@@ -23,6 +23,9 @@ export interface CAPPOGrant {
   expiresAt: number;
   signature: string;
   isRevoked: boolean;
+  issuer?: string;
+  issueDate?: string;
+  cappoSignature?: string;
 }
 
 export interface CapabilityDefinition {
@@ -118,7 +121,7 @@ export interface MCPTool {
 }
 
 // Federation Provider Interface (FPI) Types
-export type FPIProviderStatus = 'active' | 'degraded' | 'suspended' | 'registering';
+export type FPIProviderStatus = 'active' | 'degraded' | 'suspended' | 'registering' | 'offline' | 'maintenance';
 
 export interface FPIProviderPricing {
   pricePerComputeUnitVEK: number;

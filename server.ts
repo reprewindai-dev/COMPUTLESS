@@ -93,6 +93,7 @@ async function startServer() {
       expiresAt,
       isRevoked: false,
       cappoSignature,
+      signature: cappoSignature,
     };
 
     dbStore.addCappoGrant(newGrant);
