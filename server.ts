@@ -67,6 +67,35 @@ async function startServer() {
     res.json(dbStore.getSubstrateNodes());
   });
 
+  app.post('/api/substrate/nodes', (req, res) => {
+    const { name, type, region, localityBoundary, isSovereign, mcpEnabled, supportedCapabilities, latencyMs } = req.body;
+    if (!name || !region || !localityBoundary) {
+      return res.status(400).json(
+        buildProblemDetails('invalid-node-registration', 'Invalid Compute Node Data', 400, 'name, region, and localityBoundary are required', req.originalUrl)
+      );
+    }
+
+    const id = 'node-' + name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + crypto.randomBytes(2).toString('hex');
+    const newNode: SubstrateNode = {
+      id,
+      name,
+      type: type || 'local_k8s',
+      region,
+      status: 'online',
+      latencyMs: latencyMs || 15,
+      cpuUsagePct: Math.floor(Math.random() * 25) + 10,
+      memoryUsagePct: Math.floor(Math.random() * 30) + 15,
+      activeWorkloads: 0,
+      supportedCapabilities: supportedCapabilities && supportedCapabilities.length > 0 ? supportedCapabilities : ['cap-compute-v1'],
+      localityBoundary,
+      isSovereign: Boolean(isSovereign),
+      mcpEnabled: Boolean(mcpEnabled),
+    };
+
+    dbStore.addSubstrateNode(newNode);
+    res.status(201).json({ success: true, message: 'Compute node added to substrate topology.', node: newNode });
+  });
+
   app.post('/api/substrate/nodes/toggle', (req, res) => {
     const { nodeId, status, latencyMs } = req.body;
     const node = dbStore.toggleSubstrateNode(nodeId, status, latencyMs);

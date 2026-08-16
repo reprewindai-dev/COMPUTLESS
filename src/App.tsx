@@ -139,6 +139,24 @@ export default function App() {
     }
   };
 
+  const handleAddNode = async (newNodeData: Partial<SubstrateNode>) => {
+    try {
+      const res = await fetch('/api/substrate/nodes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newNodeData),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.node) {
+          setNodes((prev) => [...prev, data.node]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to add compute node:', err);
+    }
+  };
+
   const handleExecuteRoute = async (
     capabilityId: string,
     cappoGrantId: string,
@@ -243,6 +261,7 @@ export default function App() {
             nodes={nodes}
             onToggleNodeStatus={handleToggleNodeStatus}
             onUpdateNodeLatency={handleUpdateNodeLatency}
+            onAddNode={handleAddNode}
           />
         )}
 

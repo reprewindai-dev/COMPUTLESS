@@ -1,21 +1,62 @@
 import React, { useState } from 'react';
 import { SubstrateNode } from '../types';
-import { Server, Cloud, Radio, Cpu, Activity, ShieldCheck, Zap, Globe, Sliders } from 'lucide-react';
+import { Server, Cloud, Radio, Cpu, Activity, ShieldCheck, Zap, Globe, Sliders, PlusCircle, CheckCircle2, X } from 'lucide-react';
 
 interface SubstrateTopologyProps {
   nodes: SubstrateNode[];
   onToggleNodeStatus: (nodeId: string, status: 'online' | 'degraded' | 'offline') => void;
   onUpdateNodeLatency: (nodeId: string, latencyMs: number) => void;
+  onAddNode?: (newNode: Partial<SubstrateNode>) => Promise<void>;
 }
 
 export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
   nodes,
   onToggleNodeStatus,
   onUpdateNodeLatency,
+  onAddNode,
 }) => {
   const [selectedNodeId, setSelectedNodeId] = useState<string>(nodes[0]?.id || 'node-local-k8s');
+  const [showAddModal, setShowAddModal] = useState<boolean>(false);
+  const [newNodeName, setNewNodeName] = useState<string>('');
+  const [newNodeType, setNewNodeType] = useState<SubstrateNode['type']>('local_k8s');
+  const [newNodeRegion, setNewNodeRegion] = useState<string>('us-east-1');
+  const [newNodeBoundary, setNewNodeBoundary] = useState<string>('docker-daemon://localhost');
+  const [newNodeSovereign, setNewNodeSovereign] = useState<boolean>(false);
+  const [newNodeLatency, setNewNodeLatency] = useState<number>(18);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [addSuccessMsg, setAddSuccessMsg] = useState<string>('');
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
+
+  const handleCreateNode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newNodeName.trim()) return;
+    setIsSubmitting(true);
+    try {
+      if (onAddNode) {
+        await onAddNode({
+          name: newNodeName,
+          type: newNodeType,
+          region: newNodeRegion,
+          localityBoundary: newNodeBoundary,
+          isSovereign: newNodeSovereign,
+          latencyMs: newNodeLatency,
+          mcpEnabled: true,
+          supportedCapabilities: ['cap-compute-v1', 'cap-persist-v1'],
+        });
+      }
+      setAddSuccessMsg(`Compute node "${newNodeName}" deployed to substrate topology!`);
+      setNewNodeName('');
+      setTimeout(() => {
+        setAddSuccessMsg('');
+        setShowAddModal(false);
+      }, 1200);
+    } catch (err) {
+      console.error('Failed to create compute node:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const getNodeIcon = (type: SubstrateNode['type']) => {
     switch (type) {
@@ -74,7 +115,13 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider font-mono">
               Active Cloud Compute Instances ({nodes.length})
             </h3>
-            <span className="text-xs text-slate-400">Click node to inspect capabilities</span>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm cursor-pointer"
+            >
+              <PlusCircle className="h-3.5 w-3.5" />
+              <span>Deploy Custom Compute</span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -241,6 +288,129 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Deploy Custom Compute Node Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2">
+                <Cpu className="h-5 w-5 text-indigo-400" />
+                <h3 className="font-bold text-white text-base">Onboard &amp; Deploy Cloud Compute Node</h3>
+              </div>
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {addSuccessMsg && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-300 text-xs font-mono flex items-center space-x-2">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{addSuccessMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateNode} className="space-y-4 text-xs font-mono">
+              <div className="space-y-1">
+                <label className="text-slate-300 block">Instance / Node Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. BareMetal-Rack-Omega-04"
+                  value={newNodeName}
+                  onChange={(e) => setNewNodeName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-slate-300 block">Infrastructure Type</label>
+                  <select
+                    value={newNodeType}
+                    onChange={(e) => setNewNodeType(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="local_k8s">Local Bare-Metal / K8s</option>
+                    <option value="aws_edge">AWS Outpost / Edge</option>
+                    <option value="azure_sovereign">Azure Sovereign Enclave</option>
+                    <option value="rf_microcontroller">RF Microcontroller</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-300 block">Deployment Region</label>
+                  <input
+                    type="text"
+                    value={newNodeRegion}
+                    onChange={(e) => setNewNodeRegion(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-slate-300 block">Locality / Isolation Boundary</label>
+                <input
+                  type="text"
+                  value={newNodeBoundary}
+                  onChange={(e) => setNewNodeBoundary(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 items-center pt-1">
+                <div className="space-y-1">
+                  <label className="text-slate-300 block">Network Latency (ms)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="300"
+                    value={newNodeLatency}
+                    onChange={(e) => setNewNodeLatency(parseInt(e.target.value, 10))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <label className="flex items-center space-x-2 pt-4 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newNodeSovereign}
+                    onChange={(e) => setNewNodeSovereign(e.target.checked)}
+                    className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-0"
+                  />
+                  <span className="text-slate-300 text-xs font-mono">Sovereign Enclave (TPM)</span>
+                </label>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !newNodeName.trim()}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5"
+                >
+                  {isSubmitting ? (
+                    <span>Deploying...</span>
+                  ) : (
+                    <>
+                      <PlusCircle className="h-3.5 w-3.5" />
+                      <span>Deploy Instance</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -445,6 +445,12 @@ export class DatabaseStore {
   }
 
   // Mutations
+  public addSubstrateNode(node: SubstrateNode): SubstrateNode {
+    this.state.substrateNodes.push(node);
+    this.saveToDisk();
+    return node;
+  }
+
   public toggleSubstrateNode(nodeId: string, status?: 'online' | 'degraded' | 'offline', latencyMs?: number): SubstrateNode | null {
     const node = this.state.substrateNodes.find((n) => n.id === nodeId);
     if (!node) return null;
