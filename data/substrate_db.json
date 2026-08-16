@@ -1,0 +1,750 @@
+{
+  "substrateNodes": [
+    {
+      "id": "node-local-k8s",
+      "name": "Local Container Enclave",
+      "type": "local_k8s",
+      "region": "Local / On-Prem",
+      "localityBoundary": "Secure Enclave Alpha (Local Sovereign Boundary)",
+      "status": "online",
+      "latencyMs": 3,
+      "cpuUsagePct": 24,
+      "memoryUsagePct": 41,
+      "activeWorkloads": 12,
+      "isSovereign": true,
+      "mcpEnabled": true,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-agent-recurse",
+        "cap-mcp-toolcall"
+      ]
+    },
+    {
+      "id": "node-aws-edge",
+      "name": "AWS Edge Node (US-East)",
+      "type": "aws_edge",
+      "region": "us-east-1",
+      "localityBoundary": "AWS Local Zone / Outposts",
+      "status": "online",
+      "latencyMs": 28,
+      "cpuUsagePct": 58,
+      "memoryUsagePct": 62,
+      "activeWorkloads": 48,
+      "isSovereign": false,
+      "mcpEnabled": true,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-mcp-toolcall"
+      ]
+    },
+    {
+      "id": "node-azure-sovereign",
+      "name": "Azure Sovereign Cloud",
+      "type": "azure_sovereign",
+      "region": "eu-west-1 (Sovereign)",
+      "localityBoundary": "National Data Center Isolation",
+      "status": "online",
+      "latencyMs": 45,
+      "cpuUsagePct": 32,
+      "memoryUsagePct": 49,
+      "activeWorkloads": 19,
+      "isSovereign": true,
+      "mcpEnabled": true,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-agent-recurse"
+      ]
+    },
+    {
+      "id": "node-rf-edge",
+      "name": "RF Microcontroller Gateway",
+      "type": "rf_microcontroller",
+      "region": "Edge RF Boundary",
+      "localityBoundary": "RF-Powered Embedded Enclave",
+      "status": "online",
+      "latencyMs": 12,
+      "cpuUsagePct": 78,
+      "memoryUsagePct": 84,
+      "activeWorkloads": 4,
+      "isSovereign": true,
+      "mcpEnabled": false,
+      "supportedCapabilities": [
+        "cap-rf-telemetry",
+        "cap-compute-v1"
+      ]
+    }
+  ],
+  "cappoGrants": [
+    {
+      "grantId": "cappo-grant-alpha-001",
+      "subject": "agent:herdr-autonomous-core",
+      "allowedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-agent-recurse",
+        "cap-mcp-toolcall"
+      ],
+      "expiresAt": 1789481913621,
+      "signature": "sig_cappo_9a8b7c6d5e4f3a2b1c0d",
+      "isRevoked": false
+    },
+    {
+      "grantId": "cappo-grant-restricted-002",
+      "subject": "external:read-only-guest",
+      "allowedCapabilities": [
+        "cap-compute-v1"
+      ],
+      "expiresAt": 1787494713621,
+      "signature": "sig_cappo_112233445566778899",
+      "isRevoked": false
+    }
+  ],
+  "plugins": [
+    {
+      "id": "plugin-aws-bridge",
+      "name": "AWS Portable Cloud Bridge",
+      "category": "Cloud Adapter",
+      "version": "1.4.2",
+      "enabled": true,
+      "description": "Enables seamless AWS EC2/Lambda fallback execution when local substrate yields 503.",
+      "author": "Veklom Substrate WG",
+      "downloads": 14200,
+      "activeCapabilityId": "cap-compute-v1"
+    },
+    {
+      "id": "plugin-azure-sovereign",
+      "name": "Azure Sovereign Enclave",
+      "category": "Cloud Adapter",
+      "version": "2.0.1",
+      "enabled": true,
+      "description": "Connects EU/US national data center sovereign instances with hardware attestation.",
+      "author": "Computless Security",
+      "downloads": 9800,
+      "activeCapabilityId": "cap-db-persist"
+    },
+    {
+      "id": "plugin-mcp-connector",
+      "name": "MCP Universal Protocol Proxy",
+      "category": "Protocol Extension",
+      "version": "0.9.5",
+      "enabled": true,
+      "description": "Translates standard Model Context Protocol JSON-RPC into CAPPO-governed substrate actions.",
+      "author": "Anthropic/Veklom Open Spec",
+      "downloads": 28400,
+      "activeCapabilityId": "cap-mcp-toolcall"
+    },
+    {
+      "id": "plugin-pgl-verifier",
+      "name": "PGL Proof Graph Auditing Engine",
+      "category": "Security / Audit",
+      "version": "3.1.0",
+      "enabled": true,
+      "description": "Generates real-time SHA-256 state transition hashes for evidence preservation.",
+      "author": "Core Substrate Labs",
+      "downloads": 31000,
+      "activeCapabilityId": "cap-db-persist"
+    },
+    {
+      "id": "plugin-x402-settlement",
+      "name": "x402 Micropayment & Gas Metering",
+      "category": "Security / Audit",
+      "version": "1.2.0",
+      "enabled": true,
+      "description": "Handles HTTP 402 gas metering for micro-transactions across federated compute nodes.",
+      "author": "PaySubstrate Tech",
+      "downloads": 18900,
+      "activeCapabilityId": "cap-compute-v1"
+    },
+    {
+      "id": "plugin-rf-sensor",
+      "name": "RF Microcontroller Driver",
+      "category": "Hardware Connector",
+      "version": "0.4.1",
+      "enabled": false,
+      "description": "Interfaces with ultra-low power ambient RF microcontrollers on factory floor.",
+      "author": "EdgeRF Corp",
+      "downloads": 4200,
+      "activeCapabilityId": "cap-rf-telemetry"
+    }
+  ],
+  "agentTasks": [
+    {
+      "id": "herdr-task-01",
+      "name": "Substrate Workload Auto-Balancer",
+      "status": "RECURSING",
+      "capabilitiesUsed": [
+        "cap-compute-v1",
+        "cap-agent-recurse"
+      ],
+      "recursionDepth": 4,
+      "maxRecursionDepth": 10,
+      "lastOptimizedAt": "2026-08-16T14:16:33.621Z",
+      "logs": [
+        "[Herdr-Core] Agent self-inspection initiated.",
+        "[HRMR] Evaluated latency: Local (3ms) vs AWS (28ms). Preferred path set to Local Container.",
+        "[CAPPO] Authority grant cappo-grant-alpha-001 verified. Token signature valid.",
+        "[Recursion] Optimized internal state dispatch loop. Ops increased by +18.4%."
+      ],
+      "metrics": {
+        "opsPerSec": 142.5,
+        "tasksDriven": 890,
+        "successRatePct": 99.8
+      }
+    },
+    {
+      "id": "herdr-task-02",
+      "name": "PGL Cryptographic Evidence Verifier",
+      "status": "EVALUATING",
+      "capabilitiesUsed": [
+        "cap-db-persist",
+        "cap-mcp-toolcall"
+      ],
+      "recursionDepth": 2,
+      "maxRecursionDepth": 5,
+      "lastOptimizedAt": "2026-08-16T14:11:03.622Z",
+      "logs": [
+        "[PGL Engine] Auditing last 50 state transitions.",
+        "[Evidence] Proof hash tree merkle root verified across 4 nodes.",
+        "[x402] Gas settlement batch processed: 0.0042 VEK settled."
+      ],
+      "metrics": {
+        "opsPerSec": 64.2,
+        "tasksDriven": 412,
+        "successRatePct": 100
+      }
+    }
+  ],
+  "pglRecords": [
+    {
+      "id": "pgl-159261",
+      "timestamp": "2026-08-16T14:22:39.261Z",
+      "transactionId": "tx-pipe-a1fe9653",
+      "capabilityId": "cap-compute-v1",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "executedNodeId": "node-aws-edge",
+      "requestPayloadHash": "0xe22b8ff788998aabab7fb7362190cb2eaa6b989040a6bf32bde2a924bd28b7a5",
+      "responseHash": "0xdda7ddcbe14baeec0d0730e794676a958ab7601345f941f72798b9dae05dd9f4",
+      "pglSignature": "pgl_v2_sig_ab91e4e2bce465b7b63f461cfbc461e1",
+      "x402GasSettled": 0.0024,
+      "verifiable": true
+    },
+    {
+      "id": "pgl-152794",
+      "timestamp": "2026-08-16T14:22:32.794Z",
+      "transactionId": "tx-pipe-6e40e5dd",
+      "capabilityId": "cap-compute-v1",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "executedNodeId": "node-local-k8s",
+      "requestPayloadHash": "0xe22b8ff788998aabab7fb7362190cb2eaa6b989040a6bf32bde2a924bd28b7a5",
+      "responseHash": "0xdda7ddcbe14baeec0d0730e794676a958ab7601345f941f72798b9dae05dd9f4",
+      "pglSignature": "pgl_v2_sig_758305f230bad097c1326e335f4b7963",
+      "x402GasSettled": 0.0024,
+      "verifiable": true
+    },
+    {
+      "id": "pgl-148862",
+      "timestamp": "2026-08-16T14:22:28.862Z",
+      "transactionId": "tx-pipe-55ec8ac1",
+      "capabilityId": "cap-compute-v1",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "executedNodeId": "node-local-k8s",
+      "requestPayloadHash": "0xe22b8ff788998aabab7fb7362190cb2eaa6b989040a6bf32bde2a924bd28b7a5",
+      "responseHash": "0xdda7ddcbe14baeec0d0730e794676a958ab7601345f941f72798b9dae05dd9f4",
+      "pglSignature": "pgl_v2_sig_1b0abc41e2803f57e517548cbda0de82",
+      "x402GasSettled": 0.0024,
+      "verifiable": true
+    },
+    {
+      "id": "pgl-rec-1001",
+      "timestamp": "2026-08-16T13:18:33.622Z",
+      "transactionId": "tx-vk-88192031",
+      "capabilityId": "cap-compute-v1",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "executedNodeId": "node-local-k8s",
+      "requestPayloadHash": "0x8f3c9e1a2b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
+      "responseHash": "0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+      "pglSignature": "pgl_sig_secp256k1_7a8b9c0d1e2f3a4b",
+      "x402GasSettled": 0.0012,
+      "verifiable": true
+    },
+    {
+      "id": "pgl-rec-1002",
+      "timestamp": "2026-08-16T13:48:33.622Z",
+      "transactionId": "tx-vk-88192032",
+      "capabilityId": "cap-db-persist",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "executedNodeId": "node-aws-edge",
+      "requestPayloadHash": "0x3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      "responseHash": "0x5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "pglSignature": "pgl_sig_secp256k1_9c0d1e2f3a4b5c6d",
+      "x402GasSettled": 0.0028,
+      "verifiable": true
+    }
+  ],
+  "fpiProviders": [
+    {
+      "id": "fpi-provider-aws-sovereign",
+      "providerName": "AWS Nitro Enclave Provider",
+      "providerType": "hyperscaler",
+      "endpointUrl": "https://fpi.aws.veklom-substrate.net/v1",
+      "authKeyHash": "0xfpi_key_aws_88a91c02",
+      "regions": [
+        "us-east-1",
+        "eu-central-1",
+        "ap-southeast-1"
+      ],
+      "status": "active",
+      "slaUptimePct": 99.99,
+      "maxLatencyMs": 18,
+      "isSovereignEnclave": true,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-mcp-toolcall"
+      ],
+      "pricing": {
+        "pricePerComputeUnitVEK": 0.0008,
+        "spotDiscountPct": 35,
+        "currency": "VEK"
+      },
+      "quota": {
+        "totalAllocatedUnits": 1200,
+        "usedUnits": 480,
+        "maxCapacityUnits": 5000
+      },
+      "registeredAt": "2026-07-17T14:18:33.622Z",
+      "lastHeartbeatAt": "2026-08-16T14:18:33.622Z"
+    },
+    {
+      "id": "fpi-provider-equinix-edge",
+      "providerName": "Equinix Metal Baremetal Edge",
+      "providerType": "edge_telecom",
+      "endpointUrl": "https://fpi.equinix.computless.org/v1",
+      "authKeyHash": "0xfpi_key_eqx_77b31d04",
+      "regions": [
+        "us-west-2",
+        "eu-west-1"
+      ],
+      "status": "active",
+      "slaUptimePct": 99.95,
+      "maxLatencyMs": 8,
+      "isSovereignEnclave": false,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-rf-telemetry",
+        "cap-mcp-toolcall"
+      ],
+      "pricing": {
+        "pricePerComputeUnitVEK": 0.0005,
+        "spotDiscountPct": 20,
+        "currency": "VEK"
+      },
+      "quota": {
+        "totalAllocatedUnits": 800,
+        "usedUnits": 320,
+        "maxCapacityUnits": 2500
+      },
+      "registeredAt": "2026-08-01T14:18:33.622Z",
+      "lastHeartbeatAt": "2026-08-16T14:18:33.622Z"
+    },
+    {
+      "id": "fpi-provider-gcp-confidential",
+      "providerName": "Google Cloud Confidential Space",
+      "providerType": "sovereign_enclave",
+      "endpointUrl": "https://fpi.gcp.sovereign-cloud.io/v1",
+      "authKeyHash": "0xfpi_key_gcp_99c42e05",
+      "regions": [
+        "europe-west3",
+        "us-central1"
+      ],
+      "status": "active",
+      "slaUptimePct": 99.999,
+      "maxLatencyMs": 22,
+      "isSovereignEnclave": true,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-db-persist",
+        "cap-agent-recurse"
+      ],
+      "pricing": {
+        "pricePerComputeUnitVEK": 0.0012,
+        "spotDiscountPct": 40,
+        "currency": "VEK"
+      },
+      "quota": {
+        "totalAllocatedUnits": 2000,
+        "usedUnits": 850,
+        "maxCapacityUnits": 10000
+      },
+      "registeredAt": "2026-07-02T14:18:33.622Z",
+      "lastHeartbeatAt": "2026-08-16T14:18:33.622Z"
+    },
+    {
+      "id": "fpi-provider-decentralized-gpu",
+      "providerName": "Akash Decentralized GPU Swarm",
+      "providerType": "decentralized_mesh",
+      "endpointUrl": "https://fpi-mesh.akash-substrate.net/v1",
+      "authKeyHash": "0xfpi_key_akash_33d12f09",
+      "regions": [
+        "global-mesh-p2p"
+      ],
+      "status": "degraded",
+      "slaUptimePct": 98.5,
+      "maxLatencyMs": 65,
+      "isSovereignEnclave": false,
+      "supportedCapabilities": [
+        "cap-compute-v1",
+        "cap-agent-recurse"
+      ],
+      "pricing": {
+        "pricePerComputeUnitVEK": 0.0003,
+        "spotDiscountPct": 50,
+        "currency": "VEK"
+      },
+      "quota": {
+        "totalAllocatedUnits": 500,
+        "usedUnits": 410,
+        "maxCapacityUnits": 1500
+      },
+      "registeredAt": "2026-08-11T14:18:33.622Z",
+      "lastHeartbeatAt": "2026-08-16T14:11:33.622Z"
+    }
+  ],
+  "fpiAllocations": [
+    {
+      "id": "fpi-alloc-001",
+      "providerId": "fpi-provider-aws-sovereign",
+      "providerName": "AWS Nitro Enclave Provider",
+      "granteeSubject": "agent:herdr-autonomous-core",
+      "computeUnits": 120,
+      "memoryGb": 256,
+      "gpuCores": 8,
+      "allocationType": "reserved",
+      "status": "active",
+      "leaseDurationMinutes": 1440,
+      "createdAt": "2026-08-16T12:18:33.622Z",
+      "expiresAt": "2026-08-17T12:18:33.622Z",
+      "x402TotalLeaseCostVEK": 0.096
+    },
+    {
+      "id": "fpi-alloc-002",
+      "providerId": "fpi-provider-gcp-confidential",
+      "providerName": "Google Cloud Confidential Space",
+      "granteeSubject": "tenant:finance-audit-enclave",
+      "computeUnits": 300,
+      "memoryGb": 512,
+      "gpuCores": 16,
+      "allocationType": "spot",
+      "status": "active",
+      "leaseDurationMinutes": 720,
+      "createdAt": "2026-08-16T10:18:33.622Z",
+      "expiresAt": "2026-08-16T22:18:33.622Z",
+      "x402TotalLeaseCostVEK": 0.216
+    }
+  ],
+  "fpiJobs": [
+    {
+      "id": "fpi-job-8801",
+      "providerId": "fpi-provider-aws-sovereign",
+      "providerName": "AWS Nitro Enclave Provider",
+      "capabilityId": "cap-compute-v1",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "status": "completed",
+      "executionTimeMs": 14,
+      "x402GasSettled": 0.0012,
+      "pglProofSignature": "pgl_fpi_sig_0x99a81b2c3d4e5f6a",
+      "submittedAt": "2026-08-16T13:58:33.622Z",
+      "completedAt": "2026-08-16T13:58:35.122Z",
+      "outputSummary": "Stateless execution completed inside Nitro Enclave with hardware attestation.",
+      "logs": [
+        "[FPI Proxy] Authorized CAPPO grant cappo-grant-alpha-001.",
+        "[FPI Gateway] Payload routed to AWS Nitro Enclave (us-east-1).",
+        "[FPI Execution] Workload finished in 14ms.",
+        "[x402 Settlement] Metered 0.0012 VEK. PGL proof signed."
+      ]
+    },
+    {
+      "id": "fpi-job-8802",
+      "providerId": "fpi-provider-gcp-confidential",
+      "providerName": "Google Cloud Confidential Space",
+      "capabilityId": "cap-db-persist",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "status": "completed",
+      "executionTimeMs": 22,
+      "x402GasSettled": 0.0018,
+      "pglProofSignature": "pgl_fpi_sig_0x77c82d3e4f5a6b7c",
+      "submittedAt": "2026-08-16T14:08:33.622Z",
+      "completedAt": "2026-08-16T14:08:35.622Z",
+      "outputSummary": "Sovereign data persisted to GCP Confidential Storage with PGL proof ledger seal.",
+      "logs": [
+        "[FPI Proxy] CAPPO grant verified.",
+        "[FPI Discovery] HRMR matched GCP Confidential Space (europe-west3).",
+        "[FPI Execution] Immutable document stored.",
+        "[x402 Settlement] Metered 0.0018 VEK."
+      ]
+    }
+  ],
+  "fpiSettlements": [
+    {
+      "id": "fpi-stl-159261",
+      "providerId": "node-aws-edge",
+      "providerName": "AWS Edge Node (US-East)",
+      "period": "2026-08-16",
+      "jobsExecuted": 1,
+      "totalComputeUnitsUsed": 1,
+      "totalx402EarnedVEK": 0.0021,
+      "payoutStatus": "settled",
+      "payoutTxHash": "0x93eaf0e65c82a1bc9b4220e52697c6037c406f1dcbaaa3eb0cceb81ac47e735e",
+      "timestamp": "2026-08-16T14:22:39.261Z"
+    },
+    {
+      "id": "fpi-stl-152794",
+      "providerId": "node-local-k8s",
+      "providerName": "Local Container Enclave",
+      "period": "2026-08-16",
+      "jobsExecuted": 1,
+      "totalComputeUnitsUsed": 1,
+      "totalx402EarnedVEK": 0.0021,
+      "payoutStatus": "settled",
+      "payoutTxHash": "0xaa89747d28ba5d9e4b2dfc2333c66a00fd1f9d25715c69d8c6adb01199654a19",
+      "timestamp": "2026-08-16T14:22:32.794Z"
+    },
+    {
+      "id": "fpi-stl-148862",
+      "providerId": "node-local-k8s",
+      "providerName": "Local Container Enclave",
+      "period": "2026-08-16",
+      "jobsExecuted": 1,
+      "totalComputeUnitsUsed": 1,
+      "totalx402EarnedVEK": 0.0021,
+      "payoutStatus": "settled",
+      "payoutTxHash": "0x6db1c47faba1a891d3e5c5a7b52a68acb8c789be3e2cf5991a964e6573330084",
+      "timestamp": "2026-08-16T14:22:28.862Z"
+    },
+    {
+      "id": "fpi-stl-2026-08",
+      "providerId": "fpi-provider-aws-sovereign",
+      "providerName": "AWS Nitro Enclave Provider",
+      "period": "2026-08-01 - 2026-08-13",
+      "jobsExecuted": 4120,
+      "totalComputeUnitsUsed": 38400,
+      "totalx402EarnedVEK": 30.72,
+      "payoutStatus": "settled",
+      "payoutTxHash": "0x3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+      "timestamp": "2026-08-14T14:18:33.622Z"
+    },
+    {
+      "id": "fpi-stl-2026-08-02",
+      "providerId": "fpi-provider-gcp-confidential",
+      "providerName": "Google Cloud Confidential Space",
+      "period": "2026-08-01 - 2026-08-13",
+      "jobsExecuted": 2890,
+      "totalComputeUnitsUsed": 29100,
+      "totalx402EarnedVEK": 34.92,
+      "payoutStatus": "pending",
+      "payoutTxHash": "0x9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
+      "timestamp": "2026-08-16T13:18:33.622Z"
+    }
+  ],
+  "authorizationReceipts": [
+    {
+      "receiptId": "rcpt-vk-7c2cad64",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "subject": "agent:veklom-root-001",
+      "scopeDigest": "0x64dd54158337bd420b62ff3217d8a9a8f84e343ba040f245c8b8125c5a28eb8f",
+      "nonce": "0x_nonce_b9b46c740b0d45b2",
+      "policyId": "policy-substrate-standard-v1",
+      "targetCapability": "cap-compute-v1",
+      "issuedAt": "2026-08-16T14:22:39.258Z",
+      "expiresAt": 1786890459258,
+      "signature": "0x_rcpt_sig_d1c68cf297150baf16c21e2d692cd83f",
+      "status": "active"
+    },
+    {
+      "receiptId": "rcpt-vk-0ab30b27",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "subject": "agent:veklom-root-001",
+      "scopeDigest": "0x64dd54158337bd420b62ff3217d8a9a8f84e343ba040f245c8b8125c5a28eb8f",
+      "nonce": "0x_nonce_0f2248ba410a8952",
+      "policyId": "policy-substrate-standard-v1",
+      "targetCapability": "cap-compute-v1",
+      "issuedAt": "2026-08-16T14:22:32.791Z",
+      "expiresAt": 1786890452791,
+      "signature": "0x_rcpt_sig_5c43fe3a20c8f975d296c3908ebfd35f",
+      "status": "active"
+    },
+    {
+      "receiptId": "rcpt-vk-26352477",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "subject": "agent:veklom-root-001",
+      "scopeDigest": "0x64dd54158337bd420b62ff3217d8a9a8f84e343ba040f245c8b8125c5a28eb8f",
+      "nonce": "0x_nonce_5e3ffda7bb7ce022",
+      "policyId": "policy-substrate-standard-v1",
+      "targetCapability": "cap-compute-v1",
+      "issuedAt": "2026-08-16T14:22:28.851Z",
+      "expiresAt": 1786890448851,
+      "signature": "0x_rcpt_sig_43ea7343c231c0071e71de1fb86ed644",
+      "status": "active"
+    },
+    {
+      "receiptId": "rcpt-vk-8f4b2190",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "subject": "agent:veklom-root-001",
+      "scopeDigest": "0x3a7bd20a8d7a8e8b234190fa7c7b28b6d859b1",
+      "nonce": "0x_nonce_91ab4c887201ef",
+      "policyId": "policy-strict-invariant-001",
+      "targetCapability": "cap-compute-v1",
+      "issuedAt": "2026-08-16T13:18:33.622Z",
+      "expiresAt": 1786976313622,
+      "signature": "0x_rcpt_sig_8820f9a2b8471c9902bd3a1194ac27b8",
+      "status": "active"
+    },
+    {
+      "receiptId": "rcpt-vk-192a0c7e",
+      "cappoGrantId": "cappo-grant-alpha-001",
+      "subject": "agent:herdr-autonomous-core",
+      "scopeDigest": "0x49f01ca8817290bc6612b918ca12803b98c772",
+      "nonce": "0x_nonce_aa482910fd47ba",
+      "policyId": "policy-strict-invariant-001",
+      "targetCapability": "cap-agent-recurse",
+      "issuedAt": "2026-08-16T12:18:33.622Z",
+      "expiresAt": 1786976313622,
+      "signature": "0x_rcpt_sig_e48b0a991f8872c019ba228c9918bc22",
+      "status": "consumed",
+      "consumedAt": "2026-08-16T12:20:13.622Z"
+    }
+  ],
+  "blockedIntents": [
+    {
+      "id": "blk-155628",
+      "timestamp": "2026-08-16T14:22:35.628Z",
+      "subject": "agent:unauthorized",
+      "attemptedCapability": "cap-compute-v1",
+      "reason": "INSUFFICIENT_SCOPE",
+      "httpStatus": 403,
+      "problemDetails": {
+        "type": "https://computless.cloud/probs/https://computless.cloud/probs/cappo-403-forbidden",
+        "title": "Authority Invariant 1 Violation: Non-Ambient Refusal",
+        "status": 403,
+        "detail": "Subject 'agent:unauthorized' failed cryptographic authorization for capability 'cap-compute-v1'. Reason: INSUFFICIENT_SCOPE. Fail-Closed 403 terminal triggered.",
+        "instance": "/api/substrate/pipeline/execute#pipe-90155628-7cc6",
+        "timestamp": "2026-08-16T14:22:35.628Z",
+        "governanceInvariant": "Authority-Invariant-403"
+      },
+      "threatLevel": "HIGH",
+      "quarantineApplied": false
+    },
+    {
+      "id": "blk-int-9402",
+      "timestamp": "2026-08-16T10:18:33.622Z",
+      "subject": "agent:untrusted-crawler-guest",
+      "attemptedCapability": "cap-persist-v1",
+      "reason": "INSUFFICIENT_SCOPE",
+      "httpStatus": 403,
+      "problemDetails": {
+        "type": "https://computless.cloud/probs/cappo-403-forbidden",
+        "title": "Authority Check Failed",
+        "status": 403,
+        "detail": "Subject lacks active CAPPO credential for persistent database writes.",
+        "instance": "/api/substrate/route"
+      },
+      "threatLevel": "HIGH",
+      "quarantineApplied": true
+    },
+    {
+      "id": "blk-int-8821",
+      "timestamp": "2026-08-16T06:18:33.622Z",
+      "subject": "agent:external-mcp-probe",
+      "attemptedCapability": "cap-rf-telecom",
+      "reason": "REVOKED_GRANT",
+      "httpStatus": 403,
+      "problemDetails": {
+        "type": "https://computless.cloud/probs/cappo-403-forbidden",
+        "title": "Revoked CAPPO Grant Terminal Denial",
+        "status": 403,
+        "detail": "Attempted to invoke telecom mesh with revoked credential. Fail-closed Invariant 1 triggered.",
+        "instance": "/api/substrate/route"
+      },
+      "threatLevel": "CRITICAL",
+      "quarantineApplied": true
+    }
+  ],
+  "agentIdentities": [
+    {
+      "id": "agent:veklom-root-001",
+      "name": "Veklom Sovereign Root Operator",
+      "publicKey": "0x_vk_pub_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "trustTier": "T4_SOVEREIGN_ROOT",
+      "allowedCapabilities": [
+        "cap-compute-v1",
+        "cap-persist-v1",
+        "cap-rf-telecom",
+        "cap-agent-recurse",
+        "cap-mcp-bridge"
+      ],
+      "totalActionsGoverned": 142,
+      "totalReceiptsIssued": 89,
+      "evidenceChainLength": 142,
+      "recursionDepth": 8,
+      "lastActiveAt": "2026-08-16T14:18:33.622Z",
+      "registeredAt": "2026-01-15T00:00:00.000Z",
+      "sandboxRuntimePreference": "docker_isolated"
+    },
+    {
+      "id": "agent:herdr-autonomous-core",
+      "name": "Herdr Recursive Self-Hosting Agent",
+      "publicKey": "0x_vk_pub_ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+      "trustTier": "T3_SUBSTRATE_CORE",
+      "allowedCapabilities": [
+        "cap-compute-v1",
+        "cap-agent-recurse",
+        "cap-mcp-bridge"
+      ],
+      "totalActionsGoverned": 98,
+      "totalReceiptsIssued": 64,
+      "evidenceChainLength": 98,
+      "recursionDepth": 5,
+      "lastActiveAt": "2026-08-16T14:18:33.622Z",
+      "registeredAt": "2026-02-01T00:00:00.000Z",
+      "sandboxRuntimePreference": "node_vm"
+    },
+    {
+      "id": "agent:e2b-sandbox-runner",
+      "name": "E2B Bounded Execution Worker",
+      "publicKey": "0x_vk_pub_4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+      "trustTier": "T2_AUTONOMOUS",
+      "allowedCapabilities": [
+        "cap-compute-v1"
+      ],
+      "totalActionsGoverned": 45,
+      "totalReceiptsIssued": 32,
+      "evidenceChainLength": 45,
+      "recursionDepth": 3,
+      "lastActiveAt": "2026-08-16T14:18:33.622Z",
+      "registeredAt": "2026-03-10T00:00:00.000Z",
+      "sandboxRuntimePreference": "e2b_cloud_cell"
+    },
+    {
+      "id": "agent:mcp-tool-bridge",
+      "name": "MCP Context Protocol Bridge",
+      "publicKey": "0x_vk_pub_4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "trustTier": "T1_SCOPED",
+      "allowedCapabilities": [
+        "cap-mcp-bridge"
+      ],
+      "totalActionsGoverned": 38,
+      "totalReceiptsIssued": 21,
+      "evidenceChainLength": 38,
+      "recursionDepth": 2,
+      "lastActiveAt": "2026-08-16T14:18:33.622Z",
+      "registeredAt": "2026-04-12T00:00:00.000Z",
+      "sandboxRuntimePreference": "node_vm"
+    }
+  ],
+  "totalGovernedActions": 330,
+  "totalSafeRoutes": 184,
+  "lastSavedAt": "2026-08-16T14:22:39.261Z"
+}

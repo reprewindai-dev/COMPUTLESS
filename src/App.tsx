@@ -31,10 +31,12 @@ import { HerdrAgentEngine } from './components/HerdrAgentEngine';
 import { PGLLedgerExplorer } from './components/PGLLedgerExplorer';
 import { APIStudioMCP } from './components/APIStudioMCP';
 import { FederationProviderInterface } from './components/FederationProviderInterface';
+import { VeklomAmplificationEngine } from './components/VeklomAmplificationEngine';
+import { Substrate8LayerPipelineExplorer } from './components/Substrate8LayerPipelineExplorer';
 import { ArchitectureStackModal } from './components/ArchitectureStackModal';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('fpi');
+  const [activeTab, setActiveTab] = useState<string>('architecture8');
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(false);
   const [isArchitectureModalOpen, setIsArchitectureModalOpen] = useState<boolean>(false);
 
@@ -214,6 +216,17 @@ export default function App() {
       />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        {activeTab === 'architecture8' && (
+          <Substrate8LayerPipelineExplorer
+            capabilities={capabilities}
+            cappoGrants={grants}
+          />
+        )}
+
+        {activeTab === 'amplification' && (
+          <VeklomAmplificationEngine capabilities={capabilities} />
+        )}
+
         {activeTab === 'fpi' && (
           <FederationProviderInterface
             providers={fpiProviders}

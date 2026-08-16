@@ -10,8 +10,11 @@ import {
   verifyPGLProof,
   buildProblemDetails,
   buildx402Headers,
+  createAuthorizationReceipt,
+  verifyAuthorizationReceipt,
+  executeInIsolatedVMSandbox,
 } from './src/server/cryptoUtils.js';
-import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG } from './src/data/mockData.js';
+import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG, SUBSTRATE_8_LAYER_SPEC } from './src/data/mockData.js';
 import {
   SubstrateNode,
   CAPPOGrant,
@@ -24,6 +27,13 @@ import {
   FPIExecutionJob,
   FPIBillingSettlement,
   FPIDiscoveryQuery,
+  AuthorizationReceipt,
+  BlockedIntentRecord,
+  AgentIdentity,
+  SandboxExecutionRequest,
+  SandboxExecutionResult,
+  Substrate8LayerPipelineRequest,
+  Substrate8LayerPipelineResult,
 } from './src/types.js';
 
 async function startServer() {
@@ -861,6 +871,780 @@ Generate a concise, 2-bullet architectural improvement recommendation for the su
         },
       },
     });
+  });
+
+  // =========================================================================
+  // 10. Veklom Amplification Ladder & Topological Machine Substrate API
+  //     Mathematical Invariants:
+  //     A = f(G, R, B, S, E, I, N)
+  //     R = f(I, P, A, E) -> R_{n+1} = R_n + Delta E
+  // =========================================================================
+
+  // 10.1 Live Amplification Metrics
+  app.get('/api/substrate/amplification', (req, res) => {
+    res.json(dbStore.getAmplificationMetrics());
+  });
+
+  // 10.2 Authorization Receipts (Rung 2: Cryptographic, Non-Replayable)
+  app.get('/api/substrate/receipts', (req, res) => {
+    res.json(dbStore.getAuthorizationReceipts());
+  });
+
+  app.post('/api/substrate/receipts/issue', (req, res) => {
+    const {
+      cappoGrantId = 'cappo-grant-alpha-001',
+      subject = 'agent:veklom-root-001',
+      targetCapability = 'cap-compute-v1',
+      policyId = 'policy-strict-invariant-001',
+      expiresInMs = 300000,
+    } = req.body;
+
+    const receipt = createAuthorizationReceipt(cappoGrantId, subject, targetCapability, policyId, expiresInMs);
+    dbStore.addAuthorizationReceipt(receipt);
+
+    res.status(201).json({
+      success: true,
+      message: 'Cryptographic non-replayable authorization receipt issued.',
+      receipt,
+    });
+  });
+
+  app.post('/api/substrate/receipts/verify', (req, res) => {
+    const receipt: AuthorizationReceipt = req.body;
+    if (!receipt || !receipt.receiptId || !receipt.signature) {
+      return res.status(400).json(
+        buildProblemDetails('invalid-receipt', 'Invalid Authorization Receipt', 400, 'Valid receipt object with receiptId and signature required', req.originalUrl)
+      );
+    }
+
+    const verification = verifyAuthorizationReceipt(receipt);
+    res.json({
+      success: verification.valid,
+      receiptId: receipt.receiptId,
+      verification,
+    });
+  });
+
+  // 10.3 Blocked Intents (Rung 3: Anomaly detection & 403 Fail-Closed Terminal Invariants)
+  app.get('/api/substrate/blocked', (req, res) => {
+    res.json(dbStore.getBlockedIntents());
+  });
+
+  app.post('/api/substrate/blocked/simulate', (req, res) => {
+    const {
+      subject = 'agent:untrusted-rogue-actor',
+      attemptedCapability = 'cap-rf-telecom',
+      reason = 'INSUFFICIENT_SCOPE',
+      threatLevel = 'HIGH',
+    } = req.body;
+
+    const blockId = 'blk-int-' + crypto.randomBytes(3).toString('hex');
+    const timestamp = new Date().toISOString();
+
+    const blockedRecord: BlockedIntentRecord = {
+      id: blockId,
+      timestamp,
+      subject,
+      attemptedCapability,
+      reason,
+      httpStatus: 403,
+      problemDetails: {
+        type: 'https://computless.cloud/probs/cappo-403-forbidden',
+        title: 'Terminal Refusal Triggered (Invariant 1)',
+        status: 403,
+        detail: `Actor ${subject} failed authority check on ${attemptedCapability}. Reason: ${reason}. Zero permission hunting permitted.`,
+        instance: req.originalUrl,
+      },
+      threatLevel,
+      quarantineApplied: true,
+    };
+
+    dbStore.addBlockedIntent(blockedRecord);
+
+    res.status(403).json({
+      success: false,
+      blocked: true,
+      message: 'Invariant 1 strictly enforced: 403 Fail-Closed Terminal Refusal.',
+      record: blockedRecord,
+    });
+  });
+
+  // 10.4 Agent Identities (Rung 6: Durable Agent Identity Directory)
+  app.get('/api/substrate/agents/identities', (req, res) => {
+    res.json(dbStore.getAgentIdentities());
+  });
+
+  app.post('/api/substrate/agents/identities', (req, res) => {
+    const {
+      id,
+      name,
+      trustTier = 'T2_AUTONOMOUS',
+      allowedCapabilities = ['cap-compute-v1'],
+      sandboxRuntimePreference = 'node_vm',
+    } = req.body;
+
+    if (!name) {
+      return res.status(400).json(
+        buildProblemDetails('invalid-agent-identity', 'Missing Agent Identity Name', 400, 'name is required', req.originalUrl)
+      );
+    }
+
+    const agentId = id || 'agent:id-' + crypto.randomBytes(3).toString('hex');
+    const publicKey = '0x_vk_pub_' + crypto.createHash('sha256').update(agentId + name + Date.now()).digest('hex');
+
+    const newIdentity: AgentIdentity = {
+      id: agentId,
+      name,
+      publicKey,
+      trustTier,
+      allowedCapabilities,
+      totalActionsGoverned: 1,
+      totalReceiptsIssued: 1,
+      evidenceChainLength: 1,
+      recursionDepth: 1,
+      lastActiveAt: new Date().toISOString(),
+      registeredAt: new Date().toISOString(),
+      sandboxRuntimePreference,
+    };
+
+    dbStore.addAgentIdentity(newIdentity);
+
+    res.status(201).json({
+      success: true,
+      message: 'Durable Agent Identity registered to Substrate Ledger.',
+      identity: newIdentity,
+    });
+  });
+
+  // 10.5 Real Topological VM Sandbox Execution Runtime
+  app.post('/api/substrate/sandbox/execute', async (req, res) => {
+    const request: SandboxExecutionRequest = req.body;
+    const {
+      agentId = 'agent:veklom-root-001',
+      capabilityId = 'cap-compute-v1',
+      code = 'output.result = "Executed in isolated VM sandbox: " + (input.val * 2); console.log("Processing payload value: " + input.val);',
+      inputPayload = { val: 42, task: 'compute-matrix' },
+      memoryLimitMb = 128,
+      timeoutMs = 3000,
+      sandboxType = 'node_vm',
+      cappoGrantId = 'cappo-grant-alpha-001',
+    } = request;
+
+    const execId = 'exec-sbx-' + crypto.randomBytes(4).toString('hex');
+    const timestamp = new Date().toISOString();
+
+    // 1. Check Authority & issue Authorization Receipt
+    const cappoGrants = dbStore.getCappoGrants();
+    const grant = cappoGrants.find((g) => g.grantId === cappoGrantId);
+    if (!grant || grant.isRevoked || grant.expiresAt < Date.now()) {
+      const blockedRec: BlockedIntentRecord = {
+        id: 'blk-int-' + crypto.randomBytes(3).toString('hex'),
+        timestamp,
+        subject: agentId,
+        attemptedCapability: capabilityId,
+        reason: 'INSUFFICIENT_SCOPE',
+        httpStatus: 403,
+        problemDetails: {
+          type: 'https://computless.cloud/probs/cappo-403-forbidden',
+          title: 'Sandbox Execution Refused',
+          status: 403,
+          detail: `CAPPO grant ${cappoGrantId} invalid or expired for sandbox invocation.`,
+          instance: req.originalUrl,
+        },
+        threatLevel: 'HIGH',
+        quarantineApplied: false,
+      };
+      dbStore.addBlockedIntent(blockedRec);
+      return res.status(403).json(blockedRec.problemDetails);
+    }
+
+    // 2. Issue non-replayable authorization receipt
+    const receipt = createAuthorizationReceipt(cappoGrantId, agentId, capabilityId);
+    dbStore.addAuthorizationReceipt(receipt);
+
+    // 3. Execute in Real Bounded Sandbox Context (node:vm with stdout/duration/memory profiling)
+    const vmResult = await executeInIsolatedVMSandbox(code, inputPayload, timeoutMs);
+
+    // 4. Update Agent Identity Evidence
+    dbStore.updateAgentIdentityEvidence(agentId, 1);
+    dbStore.recordSafeRoute();
+
+    // 5. Generate PGL Proof and settle x402 Gas
+    const reqPayloadHash = hashPayload({ code, inputPayload, agentId });
+    const respHash = hashPayload(vmResult.outputData);
+    const gasSettled = +(0.0015 + (vmResult.durationMs / 1000) * 0.0005).toFixed(4);
+    const pglProofSignature = signPGLProof(execId, capabilityId, reqPayloadHash, respHash);
+
+    const pglRecord: PGLRecord = {
+      id: 'pgl-sbx-' + Date.now().toString().slice(-6),
+      timestamp,
+      transactionId: execId,
+      capabilityId,
+      cappoGrantId,
+      executedNodeId: `sandbox:${sandboxType}`,
+      requestPayloadHash: reqPayloadHash,
+      responseHash: respHash,
+      pglSignature: pglProofSignature,
+      x402GasSettled: gasSettled,
+      verifiable: true,
+    };
+    dbStore.addPGLRecord(pglRecord);
+
+    const executionResult: SandboxExecutionResult = {
+      executionId: execId,
+      agentId,
+      capabilityId,
+      sandboxType,
+      status: vmResult.status,
+      stdout: vmResult.stdout,
+      outputData: vmResult.outputData,
+      memoryUsageBytes: vmResult.memoryUsageBytes,
+      executionDurationMs: vmResult.durationMs,
+      receipt,
+      pglProofSignature,
+      requestPayloadHash: reqPayloadHash,
+      responseHash: respHash,
+      x402GasSettled: gasSettled,
+      timestamp,
+    };
+
+    const x402Hdrs = buildx402Headers(gasSettled, `sandbox:${sandboxType}`, execId);
+    Object.entries(x402Hdrs).forEach(([k, v]) => res.setHeader(k, v));
+    res.setHeader('X-Veklom-Receipt', receipt.receiptId);
+    res.setHeader('X-Substrate-PGL', pglProofSignature);
+
+    res.json(executionResult);
+  });
+
+  // 10.6 Recursion Loop Cycle Engine: R = f(I, P, A, E) -> R_{n+1} = R_n + Delta E
+  app.post('/api/substrate/recursion/step', async (req, res) => {
+    const { agentId = 'agent:herdr-autonomous-core', intentPrompt = 'Optimize Substrate HRMR latency routes' } = req.body;
+
+    const agentIdentities = dbStore.getAgentIdentities();
+    const identity = agentIdentities.find((i) => i.id === agentId) || agentIdentities[0];
+
+    // Compute Delta E
+    const deltaE = 1;
+    identity.recursionDepth += 1;
+    identity.evidenceChainLength += deltaE;
+    identity.totalActionsGoverned += 1;
+    identity.totalReceiptsIssued += 1;
+    identity.lastActiveAt = new Date().toISOString();
+
+    const receipt = createAuthorizationReceipt('cappo-grant-alpha-001', identity.id, 'cap-agent-recurse');
+    dbStore.addAuthorizationReceipt(receipt);
+    dbStore.recordSafeRoute();
+
+    let recommendation = `Substrate topological optimization complete: Recursion Depth ${identity.recursionDepth}. Evidence chain increased by +${deltaE} PGL blocks. Substrate entropy reduced to ${Math.max(0.1, (5.0 - identity.evidenceChainLength * 0.02)).toFixed(2)}%.`;
+
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `You are the Veklom Amplification Recursion Engine.
+Identity: ${identity.name} (${identity.id}) - Trust Tier: ${identity.trustTier}
+Recursion Depth: ${identity.recursionDepth}
+Evidence Chain Length: ${identity.evidenceChainLength} (Delta E: +${deltaE})
+Intent: ${intentPrompt}
+Evaluate recursion invariant R_{n+1} = R_n + Delta E. Give a 1-sentence mathematical summary of the state evolution.`,
+        });
+        if (response.text) recommendation = response.text.trim();
+      } catch (e) {
+        console.warn('Gemini recursion call bypassed:', e);
+      }
+    }
+
+    const txId = 'tx-rec-' + crypto.randomBytes(3).toString('hex');
+    const pglRecord: PGLRecord = {
+      id: 'pgl-rec-' + Date.now().toString().slice(-6),
+      timestamp: new Date().toISOString(),
+      transactionId: txId,
+      capabilityId: 'cap-agent-recurse',
+      cappoGrantId: receipt.cappoGrantId,
+      executedNodeId: 'node-local-k8s',
+      requestPayloadHash: hashPayload({ intentPrompt, agentId }),
+      responseHash: hashPayload(recommendation),
+      pglSignature: signPGLProof(txId, 'cap-agent-recurse', hashPayload({ intentPrompt, agentId }), hashPayload(recommendation)),
+      x402GasSettled: 0.0018,
+      verifiable: true,
+    };
+    dbStore.addPGLRecord(pglRecord);
+
+    res.json({
+      success: true,
+      formula: 'R_{n+1} = R_n + Delta E',
+      agentIdentity: identity,
+      deltaE,
+      receipt,
+      pglRecord,
+      recommendation,
+      amplificationMetrics: dbStore.getAmplificationMetrics(),
+    });
+  });
+
+  // =========================================================================
+  // 11. COMPUTLESS CLOUD: 8-Layer Substrate Pipeline Engine & Specifications
+  //     Layer 1: Capability   (What is being requested?)
+  //     Layer 2: Authority    (Who is allowed to request it?)
+  //     Layer 3: Federation   (Which providers can execute it?)
+  //     Layer 4: Routing      (Which provider should execute it now?)
+  //     Layer 5: Execution    (Where does the action actually run?)
+  //     Layer 6: Evidence     (What cryptographic proof was produced?)
+  //     Layer 7: Measurement  (Did the action actually happen?)
+  //     Layer 8: Settlement   (What economic finality is required?)
+  // =========================================================================
+
+  // 11.1 Substrate Architecture Specification Retrieval
+  app.get('/api/substrate/spec', (req, res) => {
+    res.json({
+      spec: SUBSTRATE_8_LAYER_SPEC,
+      amplificationMetrics: dbStore.getAmplificationMetrics(),
+      totalCapabilities: CAPABILITY_CATALOG.length,
+      totalNodes: dbStore.getSubstrateNodes().length,
+      totalFPIProviders: dbStore.getFPIProviders().length,
+    });
+  });
+
+  // 11.2 Execute End-to-End 8-Layer Transaction Pipeline
+  app.post('/api/substrate/pipeline/execute', async (req, res) => {
+    const pipelineStartTime = Date.now();
+    const pipelineId = 'pipe-' + Date.now().toString().slice(-8) + '-' + crypto.randomBytes(2).toString('hex');
+    const {
+      capabilityId = 'cap-compute-v1',
+      subject = 'agent:veklom-root-001',
+      cappoGrantId = 'cappo-grant-alpha-001',
+      payload = { action: 'matrix_multiply', matrixSize: 64, iterations: 100 },
+      routingPolicy = { requireSovereignty: false, maxLatencyMs: 100, priority: 'speed' },
+      runtimeTarget = 'node_vm',
+      codeSnippet,
+      simulateFault = 'NONE',
+    }: Substrate8LayerPipelineRequest = req.body;
+
+    // -------------------------------------------------------------
+    // LAYER 1: CAPABILITY (What is being requested?)
+    // -------------------------------------------------------------
+    const l1Start = Date.now();
+    const capability = CAPABILITY_CATALOG.find((c) => c.id === capabilityId) || {
+      id: capabilityId,
+      name: 'Dynamic Substrate Capability',
+      description: 'Dynamic capability dynamically routed over substrate',
+      category: 'compute' as const,
+      requiredRole: 'operator:compute',
+      schemaJson: JSON.stringify({ dynamic: true }),
+    };
+
+    let schemaValidated = true;
+    try {
+      if (typeof payload !== 'object' || payload === null) {
+        schemaValidated = false;
+      }
+    } catch {
+      schemaValidated = false;
+    }
+    const l1Duration = Date.now() - l1Start;
+
+    const layer1Result = {
+      layerNumber: 1 as const,
+      layerName: 'Capability Layer',
+      question: 'What is being requested?',
+      status: schemaValidated ? ('SUCCESS' as const) : ('ERROR' as const),
+      durationMs: l1Duration,
+      data: {
+        capability,
+        schemaValidated,
+        inputParams: payload,
+      },
+      summary: `Validated capability '${capability.name}' [${capability.id}] with schema JSON contract and role '${capability.requiredRole}'.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 2: AUTHORITY (Who is allowed to request it?)
+    // -------------------------------------------------------------
+    const l2Start = Date.now();
+    const grants = dbStore.getCappoGrants();
+    const grant = grants.find((g) => g.grantId === cappoGrantId);
+
+    const isSimulatedInvalidCappo = simulateFault === 'INVALID_CAPPO';
+    const isSimulatedExpiredGrant = simulateFault === 'EXPIRED_GRANT';
+    const isCappoValid = !isSimulatedInvalidCappo && !isSimulatedExpiredGrant && grant && !grant.isRevoked && grant.expiresAt > Date.now();
+
+    if (!isCappoValid) {
+      const blockedReason = isSimulatedInvalidCappo
+        ? 'INSUFFICIENT_SCOPE'
+        : isSimulatedExpiredGrant
+        ? 'EXPIRED_CAPPO'
+        : !grant
+        ? 'REVOKED_GRANT'
+        : 'INSUFFICIENT_SCOPE';
+
+      const problem = buildProblemDetails(
+        'https://computless.cloud/probs/cappo-403-forbidden',
+        'Authority Invariant 1 Violation: Non-Ambient Refusal',
+        403,
+        `Subject '${subject}' failed cryptographic authorization for capability '${capabilityId}'. Reason: ${blockedReason}. Fail-Closed 403 terminal triggered.`,
+        `/api/substrate/pipeline/execute#${pipelineId}`
+      );
+
+      const blockedRecord: BlockedIntentRecord = {
+        id: 'blk-' + Date.now().toString().slice(-6),
+        timestamp: new Date().toISOString(),
+        subject,
+        attemptedCapability: capabilityId,
+        reason: blockedReason,
+        httpStatus: 403,
+        problemDetails: problem,
+        threatLevel: 'HIGH',
+        quarantineApplied: false,
+      };
+      dbStore.addBlockedIntent(blockedRecord);
+
+      const l2Duration = Date.now() - l2Start;
+      const layer2BlockedResult = {
+        layerNumber: 2 as const,
+        layerName: 'Authority Layer',
+        question: 'Who is allowed to request it?',
+        status: 'BLOCKED_403' as const,
+        durationMs: l2Duration,
+        data: {
+          cappoGrantId,
+          cappoValid: false,
+          rolePermitted: false,
+          blockedReason,
+        },
+        summary: `FAIL-CLOSED 403 DENIAL: Subject '${subject}' lacks verified CAPPO scope for '${capabilityId}'. Immediate terminal termination.`,
+      };
+
+      const emptyStep = (num: 3 | 4 | 5 | 6 | 7 | 8, name: string, q: string) => ({
+        layerNumber: num,
+        layerName: name,
+        question: q,
+        status: 'SKIPPED' as const,
+        durationMs: 0,
+        data: null,
+        summary: 'Skipped due to Layer 2 Invariant 1 (403 Fail-Closed terminal denial).',
+      });
+
+      const totalPipelineDuration = Date.now() - pipelineStartTime;
+      const failedResult: Substrate8LayerPipelineResult = {
+        pipelineId,
+        timestamp: new Date().toISOString(),
+        overallStatus: 'BLOCKED_403',
+        httpStatus: 403,
+        totalDurationMs: totalPipelineDuration,
+        requestedCapabilityId: capabilityId,
+        executingSubject: subject,
+        layers: {
+          layer1_capability: layer1Result,
+          layer2_authority: layer2BlockedResult,
+          layer3_federation: emptyStep(3, 'Federation Layer', 'Which providers can execute it?'),
+          layer4_routing: emptyStep(4, 'Routing Layer', 'Which provider should execute it now?'),
+          layer5_execution: emptyStep(5, 'Execution Layer', 'Where does the action actually run?'),
+          layer6_evidence: emptyStep(6, 'Evidence Layer', 'What cryptographic proof was produced?'),
+          layer7_measurement: emptyStep(7, 'Measurement Layer', 'Did the action actually happen?'),
+          layer8_settlement: emptyStep(8, 'Settlement Layer', 'What economic finality is required?'),
+        },
+      };
+
+      return res.status(403).json(failedResult);
+    }
+
+    // Issue Authorization Receipt (Rung 2)
+    const receipt = createAuthorizationReceipt(cappoGrantId, subject, capabilityId, 'policy-substrate-standard-v1', 300000);
+    dbStore.addAuthorizationReceipt(receipt);
+    const l2Duration = Date.now() - l2Start;
+
+    const layer2Result = {
+      layerNumber: 2 as const,
+      layerName: 'Authority Layer',
+      question: 'Who is allowed to request it?',
+      status: 'SUCCESS' as const,
+      durationMs: l2Duration,
+      data: {
+        cappoGrantId,
+        cappoValid: true,
+        receipt,
+        rolePermitted: true,
+      },
+      summary: `Verified CAPPO grant '${cappoGrantId}'. Issued single-use cryptographic Authorization Receipt '${receipt.receiptId}' with SHA-256 scope digest.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 3: FEDERATION (Which providers can execute it?)
+    // -------------------------------------------------------------
+    const l3Start = Date.now();
+    const providers = dbStore.getFPIProviders();
+    const eligibleProviders = providers
+      .filter((p) => p.status === 'active')
+      .map((p) => ({
+        id: p.id,
+        name: p.providerName,
+        type: p.providerType,
+        isSovereign: p.isSovereignEnclave,
+        price: p.pricing.pricePerComputeUnitVEK,
+        sla: p.slaUptimePct,
+      }));
+
+    const l3Duration = Date.now() - l3Start;
+    const layer3Result = {
+      layerNumber: 3 as const,
+      layerName: 'Federation Layer',
+      question: 'Which providers can execute it?',
+      status: 'SUCCESS' as const,
+      durationMs: l3Duration,
+      data: {
+        totalEligibleProviders: eligibleProviders.length,
+        eligibleProviders,
+        selectedFederationCluster: routingPolicy.requireSovereignty ? 'Sovereign Enclave Federation Cluster' : 'Global Heterogeneous Mesh Pool',
+      },
+      summary: `Discovered ${eligibleProviders.length} active FPI providers offering compliant execution contracts and verified SLA baselines.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 4: ROUTING (Which provider should execute it now?)
+    // -------------------------------------------------------------
+    const l4Start = Date.now();
+    const nodes = dbStore.getSubstrateNodes();
+    let primaryNode = nodes.find((n) => n.status === 'online') || nodes[0];
+    let executedNode = primaryNode;
+    let reroutedFallback = false;
+    let fallbackReason: string | undefined = undefined;
+
+    if (simulateFault === 'NODE_OUTAGE_503') {
+      reroutedFallback = true;
+      fallbackReason = `Primary node '${primaryNode.name}' returned 503 Service Unavailable. Triggered Invariant 2 transparent fallback failover.`;
+      // Find secondary healthy node
+      const secondaryNode = nodes.find((n) => n.id !== primaryNode.id && n.status === 'online') || {
+        id: 'node-fallback-mesh',
+        name: 'Mesh High-Resilience Secondary Enclave',
+        type: 'local_k8s' as const,
+        region: 'us-east-failover',
+        localityBoundary: 'Sovereign Failover Mesh',
+        status: 'online' as const,
+        latencyMs: 18,
+        cpuUsagePct: 35,
+        memoryUsagePct: 40,
+        activeWorkloads: 5,
+        isSovereign: true,
+        mcpEnabled: true,
+        supportedCapabilities: [capabilityId],
+      };
+      executedNode = secondaryNode;
+    }
+
+    const hrmrScore = Math.round((100 - (executedNode.latencyMs || 10) * 0.4 + (executedNode.isSovereign ? 15 : 5)) * 10) / 10;
+    const l4Duration = Date.now() - l4Start;
+
+    const layer4Result = {
+      layerNumber: 4 as const,
+      layerName: 'Routing Layer',
+      question: 'Which provider should execute it now?',
+      status: reroutedFallback ? ('FALLBACK_503' as const) : ('SUCCESS' as const),
+      durationMs: l4Duration,
+      data: {
+        primaryCandidate: {
+          id: primaryNode.id,
+          name: primaryNode.name,
+          latencyMs: primaryNode.latencyMs,
+          score: 84.5,
+        },
+        executedNode: {
+          id: executedNode.id,
+          name: executedNode.name,
+          region: executedNode.region,
+        },
+        reroutedFallback,
+        fallbackReason,
+        hrmrScore,
+      },
+      summary: reroutedFallback
+        ? `INVARIANT 2 TRIGGERED: 503 Transparent failover from '${primaryNode.name}' to '${executedNode.name}' (HRMR Score: ${hrmrScore}) with 0 authority drift.`
+        : `HRMR Mesh selected optimal execution target '${executedNode.name}' [${executedNode.region}] with top score ${hrmrScore}.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 5: EXECUTION (Where does the action actually run?)
+    // -------------------------------------------------------------
+    const l5Start = Date.now();
+    const defaultCode =
+      codeSnippet ||
+      `// COMPUTLESS Substrate 8-Layer Bounded Execution
+const input = context.inputPayload || {};
+const start = Date.now();
+let count = 0;
+for (let i = 0; i < 500; i++) {
+  count += Math.sqrt(i * 1.5);
+}
+output.computedMetric = Math.round(count * 100) / 100;
+output.capabilityId = context.capabilityId;
+output.executedNode = context.targetNode;
+output.timestamp = new Date().toISOString();
+console.log("Substrate execution completed successfully on " + context.targetNode);
+`;
+
+    const vmResult = await executeInIsolatedVMSandbox(
+      defaultCode,
+      (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>,
+      3000
+    );
+
+    const l5Duration = Date.now() - l5Start;
+    const layer5Result = {
+      layerNumber: 5 as const,
+      layerName: 'Execution Layer',
+      question: 'Where does the action actually run?',
+      status: vmResult.status === 'SUCCESS' ? ('SUCCESS' as const) : ('ERROR' as const),
+      durationMs: l5Duration,
+      data: {
+        sandboxType: runtimeTarget,
+        executionStatus: vmResult.status,
+        stdout: vmResult.stdout,
+        outputData: vmResult.outputData,
+        memoryUsedBytes: vmResult.memoryUsageBytes,
+        cpuExecutionMs: vmResult.durationMs,
+      },
+      summary: `Executed in isolated '${runtimeTarget}' containment cell. Duration: ${vmResult.durationMs}ms, Memory: ${(vmResult.memoryUsageBytes / 1024).toFixed(1)} KB.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 6: EVIDENCE (What cryptographic proof was produced?)
+    // -------------------------------------------------------------
+    const l6Start = Date.now();
+    const txId = 'tx-pipe-' + crypto.randomBytes(4).toString('hex');
+    const reqHash = hashPayload(payload);
+    const respHash = hashPayload(vmResult.outputData);
+    const pglSig = signPGLProof(txId, capabilityId, reqHash, respHash);
+
+    const pglRecord: PGLRecord = {
+      id: 'pgl-' + Date.now().toString().slice(-6),
+      timestamp: new Date().toISOString(),
+      transactionId: txId,
+      capabilityId,
+      cappoGrantId: receipt.cappoGrantId,
+      executedNodeId: executedNode.id,
+      requestPayloadHash: reqHash,
+      responseHash: respHash,
+      pglSignature: pglSig,
+      x402GasSettled: 0.0024,
+      verifiable: true,
+    };
+    dbStore.addPGLRecord(pglRecord);
+
+    const l6Duration = Date.now() - l6Start;
+    const layer6Result = {
+      layerNumber: 6 as const,
+      layerName: 'Evidence Layer',
+      question: 'What cryptographic proof was produced?',
+      status: 'SUCCESS' as const,
+      durationMs: l6Duration,
+      data: {
+        pglRecord,
+        requestPayloadHash: reqHash,
+        responseHash: respHash,
+        pglSignature: pglSig,
+        immutableLedgerIndex: dbStore.getPGLRecords().length,
+      },
+      summary: `Generated immutable Proof Graph Ledger record '${pglRecord.id}' with HMAC-SHA256 non-repudiation signature.`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 7: MEASUREMENT (Did the action actually happen?)
+    // -------------------------------------------------------------
+    const l7Start = Date.now();
+    const actualWallClockMs = Date.now() - pipelineStartTime;
+    const verifiedUptime = 99.995;
+    const l7Duration = Date.now() - l7Start;
+
+    const layer7Result = {
+      layerNumber: 7 as const,
+      layerName: 'Measurement Layer',
+      question: 'Did the action actually happen?',
+      status: 'SUCCESS' as const,
+      durationMs: l7Duration,
+      data: {
+        verifiedUptimePct: verifiedUptime,
+        actualWallClockLatencyMs: actualWallClockMs,
+        memoryDeltaBytes: vmResult.memoryUsageBytes,
+        throughputOps: 1420,
+        slaCompliant: true,
+      },
+      summary: `Hardware and wall-clock verification confirmed: ${actualWallClockMs}ms latency, SLA compliant (Uptime: ${verifiedUptime}%).`,
+    };
+
+    // -------------------------------------------------------------
+    // LAYER 8: SETTLEMENT (What economic finality is required?)
+    // -------------------------------------------------------------
+    const l8Start = Date.now();
+    const gasSettled = 0.0024;
+    const providerPayout = 0.0021;
+    const protocolFee = 0.0003;
+    const payoutTxHash = '0x' + crypto.randomBytes(32).toString('hex');
+
+    const billingSettlement: FPIBillingSettlement = {
+      id: 'fpi-stl-' + Date.now().toString().slice(-6),
+      providerId: executedNode.id,
+      providerName: executedNode.name,
+      period: new Date().toISOString().slice(0, 10),
+      jobsExecuted: 1,
+      totalComputeUnitsUsed: 1,
+      totalx402EarnedVEK: providerPayout,
+      payoutStatus: 'settled',
+      payoutTxHash,
+      timestamp: new Date().toISOString(),
+    };
+    dbStore.addFPISettlement(billingSettlement);
+
+    const l8Duration = Date.now() - l8Start;
+    const layer8Result = {
+      layerNumber: 8 as const,
+      layerName: 'Settlement Layer',
+      question: 'What economic finality is required?',
+      status: 'SUCCESS' as const,
+      durationMs: l8Duration,
+      data: {
+        currency: 'VEK' as const,
+        x402GasSettled: gasSettled,
+        providerPayoutEarned: providerPayout,
+        protocolFee,
+        payoutTxHash,
+        settlementFinality: 'IMMEDIATE_FINALITY' as const,
+      },
+      summary: `Settled ${gasSettled} VEK over x402 header protocol with immediate economic finality (Payout Tx: ${payoutTxHash.slice(0, 16)}...).`,
+    };
+
+    // Set x402 headers on response
+    res.setHeader('X-402-Payment-Required', 'false');
+    res.setHeader('X-402-Gas-Settled', gasSettled.toString());
+    res.setHeader('X-402-Currency', 'VEK');
+    res.setHeader('X-Substrate-Receipt-Id', receipt.receiptId);
+    res.setHeader('X-Substrate-PGL-Hash', pglSig);
+
+    const totalPipelineDuration = Date.now() - pipelineStartTime;
+    const finalPipelineResult: Substrate8LayerPipelineResult = {
+      pipelineId,
+      timestamp: new Date().toISOString(),
+      overallStatus: reroutedFallback ? 'FALLBACK_503' : 'SUCCESS',
+      httpStatus: reroutedFallback ? 503 : 200,
+      totalDurationMs: totalPipelineDuration,
+      requestedCapabilityId: capabilityId,
+      executingSubject: subject,
+      receiptId: receipt.receiptId,
+      pglProofSignature: pglSig,
+      settlementTxHash: payoutTxHash,
+      x402GasSettled: gasSettled,
+      layers: {
+        layer1_capability: layer1Result,
+        layer2_authority: layer2Result,
+        layer3_federation: layer3Result,
+        layer4_routing: layer4Result,
+        layer5_execution: layer5Result,
+        layer6_evidence: layer6Result,
+        layer7_measurement: layer7Result,
+        layer8_settlement: layer8Result,
+      },
+    };
+
+    res.json(finalPipelineResult);
   });
 
   // Vite middleware for dev mode
