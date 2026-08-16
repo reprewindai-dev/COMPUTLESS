@@ -26,7 +26,15 @@ import {
   BlockedIntentRecord,
   AgentIdentity,
   VeklomAmplificationMetrics,
+  ActionEvidenceRecord,
+  ActionExecutionConfirmationCertificate,
 } from '../types.js';
+import {
+  generateActionEvidence,
+  confirmActionExecution,
+  buildEvidenceMerkleTree,
+  generateMerkleProof,
+} from './cryptoUtils.js';
 
 export interface DBState {
   substrateNodes: SubstrateNode[];
@@ -34,6 +42,8 @@ export interface DBState {
   plugins: PluginModule[];
   agentTasks: AgentTask[];
   pglRecords: PGLRecord[];
+  actionEvidenceRecords: ActionEvidenceRecord[];
+  confirmationCertificates: ActionExecutionConfirmationCertificate[];
   fpiProviders: FPIProvider[];
   fpiAllocations: FPIResourceAllocation[];
   fpiJobs: FPIExecutionJob[];
@@ -175,7 +185,114 @@ const INITIAL_BLOCKED: BlockedIntentRecord[] = [
   },
 ];
 
-class DatabaseStore {
+const INITIAL_ACTION_EVIDENCE: ActionEvidenceRecord[] = [
+  {
+    id: 'ev-pgl-root-genesis',
+    timestamp: '2026-08-16T12:00:00.000Z',
+    blockHeight: 1,
+    transactionId: 'tx-genesis-0001',
+    capabilityId: 'cap-compute-v1',
+    subject: 'agent:veklom-root-001',
+    cappoGrantId: 'cappo-grant-alpha-001',
+    executingNodeId: 'node-us-east-metal',
+    executingNodeName: 'Sovereign Bare-Metal Enclave',
+    requestPayloadHash: '0x8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4',
+    responseHash: '0x3857b64010a30b0ee11330d172e2764b8bb6d8a211910efc680696b0142cbb86',
+    parentBlockHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
+    blockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
+    pglSignature: 'pgl_sig_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    merkleLeafHash: '0x1c3a647d6928e4695781a9544974246990264d1f2b604e3391b489d81d2222ff',
+    nonce: '0x_ev_nonce_genesis01',
+    enclaveHardwareProof: 'enclave_tpm2_attestation_genesis_root',
+    verifiable: true,
+  },
+  {
+    id: 'ev-pgl-herdr-recurse',
+    timestamp: '2026-08-16T13:30:00.000Z',
+    blockHeight: 2,
+    transactionId: 'tx-agent-9921',
+    capabilityId: 'cap-agent-recurse',
+    subject: 'agent:herdr-autonomous-core',
+    cappoGrantId: 'cappo-grant-herdr-002',
+    executingNodeId: 'node-eu-west-k8s',
+    executingNodeName: 'Frankfurt Confidential K8s Cell',
+    requestPayloadHash: '0x2c624232cdd221771294dfbb310aca000a0df6ac9b66b0d199f34f4944366e56',
+    responseHash: '0x5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8',
+    parentBlockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
+    blockHash: '0xb234a91ef8839cb8a101b0c0349a1d2f9933e144a8029c7d4481b7a00119beef',
+    pglSignature: 'pgl_sig_8d23467189abcd1048aef0011883abefc8821948ae1082c91823901847120199',
+    merkleLeafHash: '0x4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
+    nonce: '0x_ev_nonce_herdr_rec99',
+    enclaveHardwareProof: 'enclave_tpm2_attestation_k8s_cell_02',
+    verifiable: true,
+  },
+];
+
+const INITIAL_CERTIFICATES: ActionExecutionConfirmationCertificate[] = [
+  {
+    certificateId: 'aecc-genesis-0001',
+    timestamp: '2026-08-16T12:00:01.000Z',
+    actionId: 'act-genesis-001',
+    transactionId: 'tx-genesis-0001',
+    capabilityId: 'cap-compute-v1',
+    subject: 'agent:veklom-root-001',
+    executingNodeId: 'node-us-east-metal',
+    overallConfirmationStatus: 'FULLY_CONFIRMED',
+    confirmationScorePct: 98,
+    dimensions: {
+      schemaConformance: {
+        status: 'PASSED',
+        scorePct: 100,
+        matchedFields: ['status', 'result', 'executionMetrics'],
+        missingRequiredFields: [],
+        typeMismatchFields: [],
+        details: 'Output payload 100% conforms to cap-compute-v1 JSON schema specification.',
+      },
+      slaLatency: {
+        status: 'PASSED',
+        scorePct: 100,
+        actualWallClockLatencyMs: 12,
+        budgetedMaxLatencyMs: 170,
+        varianceMs: -158,
+        slaCompliant: true,
+        details: 'Execution completed in 12ms (Budget: 170ms, Margin: +158ms).',
+      },
+      resourceContainment: {
+        status: 'PASSED',
+        scorePct: 100,
+        memoryUsedBytes: 49152,
+        memoryQuotaBytes: 268435456,
+        memoryUsagePct: 0.02,
+        cpuExecutionMs: 12,
+        sandboxIsolationIntact: true,
+        details: 'Sandbox heap memory bounded at 48.0 KB (0.02% of 256MB quota). Containment intact.',
+      },
+      runtimeExit: {
+        status: 'PASSED',
+        scorePct: 100,
+        exitCode: 0,
+        errorCount: 0,
+        runtimeStatus: 'SUCCESS',
+        stdoutLineCount: 3,
+        details: 'Process terminated cleanly with Exit Code 0. No unhandled exceptions or panic signals.',
+      },
+      hardwareTelemetry: {
+        status: 'PASSED',
+        scorePct: 100,
+        monotonicCounterDelta: 4,
+        uptimeAttestationPct: 99.99,
+        enclaveAttestationValid: true,
+        nonceFreshness: 'FRESH',
+        details: 'Hardware TPM attestation verified. Monotonic clock increment verified, uptime attested at 99.99%.',
+      },
+    },
+    cryptographicAttestationSignature: 'aecc_sig_genesis_root_998127391823019823901823091823',
+    issuer: 'computless://substrate/measurement-verifier/v2',
+    summaryVerdict: 'ACTION CONFIRMED (Score: 98%): Action was executed with full schema compliance, within SLA bounds, and verified hardware telemetry.',
+  },
+];
+
+export class DatabaseStore {
   private state: DBState;
 
   constructor() {
@@ -198,6 +315,8 @@ class DatabaseStore {
           plugins: parsed.plugins || [...INITIAL_PLUGINS],
           agentTasks: parsed.agentTasks || [...INITIAL_AGENT_TASKS],
           pglRecords: parsed.pglRecords || [...INITIAL_PGL_RECORDS],
+          actionEvidenceRecords: parsed.actionEvidenceRecords || [...INITIAL_ACTION_EVIDENCE],
+          confirmationCertificates: parsed.confirmationCertificates || [...INITIAL_CERTIFICATES],
           fpiProviders: parsed.fpiProviders || [...INITIAL_FPI_PROVIDERS],
           fpiAllocations: parsed.fpiAllocations || [...INITIAL_FPI_ALLOCATIONS],
           fpiJobs: parsed.fpiJobs || [...INITIAL_FPI_JOBS],
@@ -220,6 +339,8 @@ class DatabaseStore {
       plugins: [...INITIAL_PLUGINS],
       agentTasks: [...INITIAL_AGENT_TASKS],
       pglRecords: [...INITIAL_PGL_RECORDS],
+      actionEvidenceRecords: [...INITIAL_ACTION_EVIDENCE],
+      confirmationCertificates: [...INITIAL_CERTIFICATES],
       fpiProviders: [...INITIAL_FPI_PROVIDERS],
       fpiAllocations: [...INITIAL_FPI_ALLOCATIONS],
       fpiJobs: [...INITIAL_FPI_JOBS],
@@ -255,6 +376,22 @@ class DatabaseStore {
   public getPlugins(): PluginModule[] { return this.state.plugins; }
   public getAgentTasks(): AgentTask[] { return this.state.agentTasks; }
   public getPGLRecords(): PGLRecord[] { return this.state.pglRecords; }
+  public getActionEvidenceRecords(): ActionEvidenceRecord[] { return this.state.actionEvidenceRecords; }
+  public getActionEvidenceRecord(id: string): ActionEvidenceRecord | undefined {
+    return this.state.actionEvidenceRecords.find((r) => r.id === id || r.transactionId === id);
+  }
+  public getConfirmationCertificates(): ActionExecutionConfirmationCertificate[] { return this.state.confirmationCertificates; }
+  public getConfirmationCertificate(id: string): ActionExecutionConfirmationCertificate | undefined {
+    return this.state.confirmationCertificates.find((c) => c.certificateId === id || c.actionId === id || c.transactionId === id);
+  }
+  public getEvidenceMerkleTree() {
+    const leaves = this.state.actionEvidenceRecords.map((r) => r.merkleLeafHash);
+    return buildEvidenceMerkleTree(leaves);
+  }
+  public getEvidenceMerkleProofForIndex(index: number) {
+    const leaves = this.state.actionEvidenceRecords.map((r) => r.merkleLeafHash);
+    return generateMerkleProof(leaves, index);
+  }
   public getFPIProviders(): FPIProvider[] { return this.state.fpiProviders; }
   public getFPIAllocations(): FPIResourceAllocation[] { return this.state.fpiAllocations; }
   public getFPIJobs(): FPIExecutionJob[] { return this.state.fpiJobs; }
@@ -262,6 +399,50 @@ class DatabaseStore {
   public getAuthorizationReceipts(): AuthorizationReceipt[] { return this.state.authorizationReceipts; }
   public getBlockedIntents(): BlockedIntentRecord[] { return this.state.blockedIntents; }
   public getAgentIdentities(): AgentIdentity[] { return this.state.agentIdentities; }
+
+  // Mutations
+  public addActionEvidenceRecord(record: ActionEvidenceRecord): ActionEvidenceRecord {
+    this.state.actionEvidenceRecords.unshift(record);
+    // Keep PGL records in sync
+    const pglRec: PGLRecord = {
+      id: record.id.replace('ev-', ''),
+      timestamp: record.timestamp,
+      transactionId: record.transactionId,
+      capabilityId: record.capabilityId,
+      cappoGrantId: record.cappoGrantId,
+      executedNodeId: record.executingNodeId,
+      requestPayloadHash: record.requestPayloadHash,
+      responseHash: record.responseHash,
+      pglSignature: record.pglSignature,
+      x402GasSettled: 0.0024,
+      verifiable: record.verifiable,
+    };
+    this.state.pglRecords.unshift(pglRec);
+    this.state.totalGovernedActions += 1;
+    this.saveToDisk();
+    return record;
+  }
+
+  public addConfirmationCertificate(cert: ActionExecutionConfirmationCertificate): ActionExecutionConfirmationCertificate {
+    this.state.confirmationCertificates.unshift(cert);
+    this.saveToDisk();
+    return cert;
+  }
+
+  public tamperActionEvidence(id: string, tamperPatch: { requestPayloadHash?: string; responseHash?: string; pglSignature?: string }): ActionEvidenceRecord | null {
+    const record = this.state.actionEvidenceRecords.find((r) => r.id === id || r.transactionId === id);
+    if (!record) return null;
+    if (tamperPatch.requestPayloadHash) record.requestPayloadHash = tamperPatch.requestPayloadHash;
+    if (tamperPatch.responseHash) record.responseHash = tamperPatch.responseHash;
+    if (tamperPatch.pglSignature) record.pglSignature = tamperPatch.pglSignature;
+    record.tamperFlags = {
+      isTampered: true,
+      reason: 'Manual / simulated tamper mutation injected into evidence ledger cell.',
+    };
+    record.verifiable = false;
+    this.saveToDisk();
+    return record;
+  }
 
   // Mutations
   public toggleSubstrateNode(nodeId: string, status?: 'online' | 'degraded' | 'offline', latencyMs?: number): SubstrateNode | null {

@@ -43,17 +43,17 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
               <span className="text-xs text-slate-400">Locality-Bounded Hardware &amp; Isolation</span>
             </div>
             <h2 className="text-xl font-bold text-white mt-1">
-              Substrate Infrastructure Topology &amp; Provider Mesh
+              Cloud Compute Substrate Topology &amp; Provider Mesh
             </h2>
             <p className="text-sm text-slate-300 mt-1 max-w-3xl">
-              Computless Cloud abstracts hardware across AWS, Azure, local container enclaves, and RF microcontrollers.
+              Computless Cloud Compute abstracts hardware across AWS, Azure, local container enclaves, and RF microcontrollers.
               Execution location is interchangeable, while authority identity remains strictly invariant.
             </p>
           </div>
 
           <div className="flex items-center space-x-3 text-xs font-mono">
             <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
-              <span className="text-slate-400 block text-[10px]">TOTAL NODES</span>
+              <span className="text-slate-400 block text-[10px]">COMPUTE NODES</span>
               <span className="text-base font-bold text-white">{nodes.length}</span>
             </div>
             <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
@@ -72,7 +72,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
         <div className="lg:col-span-7 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider font-mono">
-              Active Substrate Instances ({nodes.length})
+              Active Cloud Compute Instances ({nodes.length})
             </h3>
             <span className="text-xs text-slate-400">Click node to inspect capabilities</span>
           </div>

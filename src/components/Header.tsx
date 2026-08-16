@@ -70,56 +70,31 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Navigation Tabs */}
         <div className="flex space-x-1 border-t border-slate-800/80 overflow-x-auto py-2 scrollbar-none">
           <button
-            onClick={() => setActiveTab('architecture8')}
+            onClick={() => setActiveTab('topology')}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'architecture8'
+              activeTab === 'topology'
                 ? 'bg-gradient-to-r from-sky-600/40 via-indigo-600/40 to-emerald-600/30 text-white border border-sky-400/50 shadow-lg shadow-sky-500/10'
                 : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
             }`}
           >
-            <span>8-Layer Substrate Architecture</span>
+            <span>Cloud Compute Nodes</span>
             <span className="px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-mono font-bold">
-              8-Layers
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('amplification')}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'amplification'
-                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Veklom Amplification Ladder</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-sky-500/20 text-sky-300 rounded font-mono font-bold">
-              7-Rungs
+              Substrate
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('fpi')}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
               activeTab === 'fpi'
                 ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <span>Federation Provider Interface (FPI)</span>
+            <span>Federation Providers (FPI)</span>
             <span className="px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-mono font-bold">
-              FPI Spec
+              FPI
             </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('topology')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'topology'
-                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Topology &amp; Substrate</span>
           </button>
 
           <button
@@ -154,7 +129,29 @@ export const Header: React.FC<HeaderProps> = ({
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
-            <span>PGL Ledger &amp; x402</span>
+            <span>Evidence &amp; PGL Ledger</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('architecture8')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
+              activeTab === 'architecture8'
+                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <span>8-Layer Substrate Pipeline</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('amplification')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
+              activeTab === 'amplification'
+                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <span>Amplification Ladder</span>
           </button>
 
           <button

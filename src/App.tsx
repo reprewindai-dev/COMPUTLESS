@@ -36,7 +36,7 @@ import { Substrate8LayerPipelineExplorer } from './components/Substrate8LayerPip
 import { ArchitectureStackModal } from './components/ArchitectureStackModal';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('architecture8');
+  const [activeTab, setActiveTab] = useState<string>('topology');
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(false);
   const [isArchitectureModalOpen, setIsArchitectureModalOpen] = useState<boolean>(false);
 

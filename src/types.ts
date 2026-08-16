@@ -35,6 +35,8 @@ export interface CapabilityDefinition {
   category: 'compute' | 'data_persistence' | 'edge_rf' | 'agent_recursion' | 'mcp_bridge';
   requiredRole: string;
   schemaJson: string;
+  outputSchema?: Record<string, string>;
+  maxPricePerCall?: number;
 }
 
 export interface HRMRRouteRequest {
@@ -425,5 +427,181 @@ export interface Substrate8LayerPipelineResult {
       settlementFinality: 'IMMEDIATE_FINALITY';
     }>;
   };
+}
+
+// =========================================================================
+// Evidence Layer (Layer 6) - Cryptographic Action Attestation & Proof Graph
+// =========================================================================
+
+export interface ActionEvidenceRecord {
+  id: string;
+  timestamp: string;
+  blockHeight: number;
+  transactionId: string;
+  capabilityId: string;
+  subject: string;
+  cappoGrantId?: string;
+  executingNodeId: string;
+  executingNodeName: string;
+  requestPayloadHash: string;
+  responseHash: string;
+  parentBlockHash: string;
+  blockHash: string;
+  pglSignature: string;
+  merkleLeafHash: string;
+  nonce: string;
+  enclaveHardwareProof?: string;
+  verifiable: boolean;
+  tamperFlags?: {
+    isTampered: boolean;
+    reason?: string;
+  };
+}
+
+export interface ActionSignatureRequest {
+  transactionId: string;
+  capabilityId: string;
+  subject: string;
+  cappoGrantId?: string;
+  requestPayload: Record<string, unknown>;
+  responsePayload: Record<string, unknown>;
+  executingNodeId: string;
+  executingNodeName?: string;
+  customNonce?: string;
+}
+
+export interface ActionSignatureVerificationReport {
+  valid: boolean;
+  tamperDetected: boolean;
+  verificationTimestamp: string;
+  transactionId: string;
+  capabilityId: string;
+  subject: string;
+  computedRequestHash: string;
+  computedResponseHash: string;
+  expectedSignature: string;
+  providedSignature: string;
+  signatureMatch: boolean;
+  chainIntegrityValid: boolean;
+  merkleProofValid: boolean;
+  attestationCheckpoints: {
+    checkpoint: string;
+    status: 'PASSED' | 'FAILED' | 'WARNING';
+    description: string;
+    computedValue?: string;
+    expectedValue?: string;
+  }[];
+  verdictSummary: string;
+}
+
+export interface EvidenceMerkleProof {
+  leafHash: string;
+  leafIndex: number;
+  merkleRoot: string;
+  auditPath: {
+    position: 'left' | 'right';
+    hash: string;
+  }[];
+  isValid: boolean;
+}
+
+export interface EvidenceMerkleTreeData {
+  merkleRoot: string;
+  totalLeaves: number;
+  treeHeight: number;
+  leaves: string[];
+  blockHeight: number;
+  generatedAt: string;
+}
+
+// =========================================================================
+// Measurement Layer (Layer 7) - 5-Point Execution Confirmation & Telemetry
+// =========================================================================
+
+export interface SchemaValidationEvaluation {
+  status: 'PASSED' | 'FAILED' | 'PARTIAL';
+  scorePct: number;
+  matchedFields: string[];
+  missingRequiredFields: string[];
+  typeMismatchFields: { field: string; expectedType: string; actualType: string }[];
+  details: string;
+}
+
+export interface SLAEvaluation {
+  status: 'PASSED' | 'DEGRADED' | 'FAILED';
+  scorePct: number;
+  actualWallClockLatencyMs: number;
+  budgetedMaxLatencyMs: number;
+  varianceMs: number;
+  slaCompliant: boolean;
+  details: string;
+}
+
+export interface ResourceContainmentEvaluation {
+  status: 'PASSED' | 'WARNING' | 'EXCEEDED';
+  scorePct: number;
+  memoryUsedBytes: number;
+  memoryQuotaBytes: number;
+  memoryUsagePct: number;
+  cpuExecutionMs: number;
+  sandboxIsolationIntact: boolean;
+  details: string;
+}
+
+export interface RuntimeExitEvaluation {
+  status: 'PASSED' | 'FAILED';
+  scorePct: number;
+  exitCode: number;
+  errorCount: number;
+  runtimeStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION';
+  stdoutLineCount: number;
+  details: string;
+}
+
+export interface HardwareTelemetryEvaluation {
+  status: 'PASSED' | 'UNVERIFIED';
+  scorePct: number;
+  monotonicCounterDelta: number;
+  uptimeAttestationPct: number;
+  enclaveAttestationValid: boolean;
+  nonceFreshness: 'FRESH' | 'EXPIRED' | 'REPLAY_DETECTED';
+  details: string;
+}
+
+export interface ActionExecutionConfirmationCertificate {
+  certificateId: string;
+  timestamp: string;
+  actionId: string;
+  transactionId: string;
+  capabilityId: string;
+  subject: string;
+  executingNodeId: string;
+  overallConfirmationStatus: 'FULLY_CONFIRMED' | 'DEGRADED_SLA' | 'SCHEMA_MISMATCH' | 'EXECUTION_FAILED';
+  confirmationScorePct: number;
+  dimensions: {
+    schemaConformance: SchemaValidationEvaluation;
+    slaLatency: SLAEvaluation;
+    resourceContainment: ResourceContainmentEvaluation;
+    runtimeExit: RuntimeExitEvaluation;
+    hardwareTelemetry: HardwareTelemetryEvaluation;
+  };
+  cryptographicAttestationSignature: string;
+  issuer: string;
+  summaryVerdict: string;
+}
+
+export interface ActionConfirmationRequest {
+  actionId?: string;
+  transactionId: string;
+  capabilityId: string;
+  subject: string;
+  executingNodeId: string;
+  requestPayload: Record<string, unknown>;
+  responsePayload: Record<string, unknown>;
+  actualWallClockLatencyMs: number;
+  memoryUsedBytes: number;
+  executionStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION';
+  stdout?: string[];
+  enclaveAttested?: boolean;
 }
 

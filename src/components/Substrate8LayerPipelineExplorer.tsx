@@ -390,13 +390,63 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
 
                           {/* Expanded Step Data Inspector */}
                           {isExpanded && (
-                            <div className="px-4 pb-4 pt-2 border-t border-slate-800/80 bg-slate-950/90 rounded-b-xl">
-                              <span className="text-[10px] text-slate-400 block mb-1 font-bold uppercase">
-                                Layer {layerStep.layerNumber} Structured Data Payload:
-                              </span>
-                              <pre className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-sky-300 text-[11px] overflow-x-auto max-h-48">
-                                {JSON.stringify(layerStep.data, null, 2)}
-                              </pre>
+                            <div className="px-4 pb-4 pt-2 border-t border-slate-800/80 bg-slate-950/90 rounded-b-xl space-y-3">
+                              {/* Specialized visualization for Layer 6: Evidence */}
+                              {layerStep.layerNumber === 6 && layerStep.data && (
+                                <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-2 text-xs font-mono">
+                                  <div className="flex items-center justify-between text-emerald-400 font-bold">
+                                    <span>🔐 Immutable Cryptographic Proof Seal</span>
+                                    <span>Block #{layerStep.data.blockHeight ?? 1}</span>
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] text-slate-300">
+                                    <div>
+                                      <span className="text-[10px] text-slate-500 block">MERKLE LEAF HASH:</span>
+                                      <span className="text-emerald-300 break-all">{layerStep.data.merkleLeafHash}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px] text-slate-500 block">PARENT BLOCK HASH:</span>
+                                      <span className="text-slate-400 break-all">{layerStep.data.parentBlockHash}</span>
+                                    </div>
+                                    <div className="md:col-span-2">
+                                      <span className="text-[10px] text-slate-500 block">HMAC-SHA256 SIGNATURE:</span>
+                                      <span className="text-amber-300 break-all">{layerStep.data.pglSignature}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Specialized visualization for Layer 7: Measurement */}
+                              {layerStep.layerNumber === 7 && layerStep.data && (
+                                <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-2 text-xs font-mono">
+                                  <div className="flex items-center justify-between text-sky-400 font-bold">
+                                    <span>📊 5-Point Confirmation Certificate</span>
+                                    <span className="text-emerald-400">Score: {layerStep.data.confirmationScorePct}%</span>
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+                                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
+                                      <span className="text-[10px] text-slate-500 block">SCHEMA CONFORMANCE:</span>
+                                      <span className="text-emerald-400 font-bold">{layerStep.data.dimensions?.schemaConformance?.status || 'PASS'}</span>
+                                    </div>
+                                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
+                                      <span className="text-[10px] text-slate-500 block">SLA LATENCY:</span>
+                                      <span className="text-sky-300 font-bold">{layerStep.data.dimensions?.slaLatency?.actualWallClockLatencyMs}ms / Max {layerStep.data.dimensions?.slaLatency?.targetMaxLatencyMs}ms</span>
+                                    </div>
+                                    <div className="p-2 bg-slate-950 rounded border border-slate-800">
+                                      <span className="text-[10px] text-slate-500 block">RUNTIME EXIT CODE:</span>
+                                      <span className="text-emerald-400 font-bold">{layerStep.data.dimensions?.runtimeStatus?.exitCode || '0 (SUCCESS)'}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              <div>
+                                <span className="text-[10px] text-slate-400 block mb-1 font-bold uppercase">
+                                  Layer {layerStep.layerNumber} Structured Data Payload:
+                                </span>
+                                <pre className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-sky-300 text-[11px] overflow-x-auto max-h-48">
+                                  {JSON.stringify(layerStep.data, null, 2)}
+                                </pre>
+                              </div>
                             </div>
                           )}
                         </div>

@@ -13,6 +13,11 @@ import {
   createAuthorizationReceipt,
   verifyAuthorizationReceipt,
   executeInIsolatedVMSandbox,
+  generateActionEvidence,
+  verifyActionEvidence,
+  confirmActionExecution,
+  buildEvidenceMerkleTree,
+  generateMerkleProof,
 } from './src/server/cryptoUtils.js';
 import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG, SUBSTRATE_8_LAYER_SPEC } from './src/data/mockData.js';
 import {
@@ -34,6 +39,10 @@ import {
   SandboxExecutionResult,
   Substrate8LayerPipelineRequest,
   Substrate8LayerPipelineResult,
+  ActionEvidenceRecord,
+  ActionSignatureRequest,
+  ActionConfirmationRequest,
+  ActionExecutionConfirmationCertificate,
 } from './src/types.js';
 
 async function startServer() {
@@ -1511,24 +1520,25 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     // -------------------------------------------------------------
     const l6Start = Date.now();
     const txId = 'tx-pipe-' + crypto.randomBytes(4).toString('hex');
-    const reqHash = hashPayload(payload);
-    const respHash = hashPayload(vmResult.outputData);
-    const pglSig = signPGLProof(txId, capabilityId, reqHash, respHash);
+    const existingEvidenceList = dbStore.getActionEvidenceRecords();
+    const lastParentHash = existingEvidenceList[0]?.blockHash || '0x0000000000000000000000000000000000000000000000000000000000000000';
+    const nextBlockHeight = existingEvidenceList.length + 1;
 
-    const pglRecord: PGLRecord = {
-      id: 'pgl-' + Date.now().toString().slice(-6),
-      timestamp: new Date().toISOString(),
-      transactionId: txId,
-      capabilityId,
-      cappoGrantId: receipt.cappoGrantId,
-      executedNodeId: executedNode.id,
-      requestPayloadHash: reqHash,
-      responseHash: respHash,
-      pglSignature: pglSig,
-      x402GasSettled: 0.0024,
-      verifiable: true,
-    };
-    dbStore.addPGLRecord(pglRecord);
+    const actionEvidence = generateActionEvidence(
+      {
+        transactionId: txId,
+        capabilityId,
+        subject,
+        cappoGrantId: receipt.cappoGrantId,
+        requestPayload: (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>,
+        responsePayload: vmResult.outputData,
+        executingNodeId: executedNode.id,
+        executingNodeName: executedNode.name,
+      },
+      lastParentHash,
+      nextBlockHeight
+    );
+    dbStore.addActionEvidenceRecord(actionEvidence);
 
     const l6Duration = Date.now() - l6Start;
     const layer6Result = {
@@ -1538,13 +1548,28 @@ console.log("Substrate execution completed successfully on " + context.targetNod
       status: 'SUCCESS' as const,
       durationMs: l6Duration,
       data: {
-        pglRecord,
-        requestPayloadHash: reqHash,
-        responseHash: respHash,
-        pglSignature: pglSig,
-        immutableLedgerIndex: dbStore.getPGLRecords().length,
+        pglRecord: {
+          id: actionEvidence.id,
+          timestamp: actionEvidence.timestamp,
+          transactionId: actionEvidence.transactionId,
+          capabilityId: actionEvidence.capabilityId,
+          cappoGrantId: actionEvidence.cappoGrantId,
+          executedNodeId: actionEvidence.executingNodeId,
+          requestPayloadHash: actionEvidence.requestPayloadHash,
+          responseHash: actionEvidence.responseHash,
+          pglSignature: actionEvidence.pglSignature,
+          x402GasSettled: 0.0024,
+          verifiable: true,
+        },
+        evidenceRecord: actionEvidence,
+        requestPayloadHash: actionEvidence.requestPayloadHash,
+        responseHash: actionEvidence.responseHash,
+        pglSignature: actionEvidence.pglSignature,
+        blockHash: actionEvidence.blockHash,
+        merkleLeafHash: actionEvidence.merkleLeafHash,
+        immutableLedgerIndex: dbStore.getActionEvidenceRecords().length,
       },
-      summary: `Generated immutable Proof Graph Ledger record '${pglRecord.id}' with HMAC-SHA256 non-repudiation signature.`,
+      summary: `Generated immutable Proof Graph Ledger block #${nextBlockHeight} with HMAC-SHA256 non-repudiation signature & Merkle leaf.`,
     };
 
     // -------------------------------------------------------------
@@ -1552,23 +1577,45 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     // -------------------------------------------------------------
     const l7Start = Date.now();
     const actualWallClockMs = Date.now() - pipelineStartTime;
-    const verifiedUptime = 99.995;
+    const capabilityDef = CAPABILITY_CATALOG.find((c) => c.id === capabilityId);
+
+    const confirmationCertificate = confirmActionExecution(
+      {
+        transactionId: txId,
+        capabilityId,
+        subject,
+        executingNodeId: executedNode.id,
+        requestPayload: (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>,
+        responsePayload: vmResult.outputData,
+        actualWallClockLatencyMs: actualWallClockMs,
+        memoryUsedBytes: vmResult.memoryUsageBytes,
+        executionStatus: vmResult.status,
+        stdout: vmResult.stdout,
+        enclaveAttested: executedNode.isSovereign,
+      },
+      capabilityDef,
+      executedNode
+    );
+    dbStore.addConfirmationCertificate(confirmationCertificate);
+
+    const verifiedUptime = executedNode.status === 'online' ? 99.995 : 98.4;
     const l7Duration = Date.now() - l7Start;
 
     const layer7Result = {
       layerNumber: 7 as const,
       layerName: 'Measurement Layer',
       question: 'Did the action actually happen?',
-      status: 'SUCCESS' as const,
+      status: confirmationCertificate.overallConfirmationStatus === 'EXECUTION_FAILED' ? ('ERROR' as const) : ('SUCCESS' as const),
       durationMs: l7Duration,
       data: {
         verifiedUptimePct: verifiedUptime,
         actualWallClockLatencyMs: actualWallClockMs,
         memoryDeltaBytes: vmResult.memoryUsageBytes,
         throughputOps: 1420,
-        slaCompliant: true,
+        slaCompliant: confirmationCertificate.dimensions.slaLatency.slaCompliant,
+        confirmationCertificate,
       },
-      summary: `Hardware and wall-clock verification confirmed: ${actualWallClockMs}ms latency, SLA compliant (Uptime: ${verifiedUptime}%).`,
+      summary: confirmationCertificate.summaryVerdict,
     };
 
     // -------------------------------------------------------------
@@ -1617,7 +1664,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     res.setHeader('X-402-Gas-Settled', gasSettled.toString());
     res.setHeader('X-402-Currency', 'VEK');
     res.setHeader('X-Substrate-Receipt-Id', receipt.receiptId);
-    res.setHeader('X-Substrate-PGL-Hash', pglSig);
+    res.setHeader('X-Substrate-PGL-Hash', actionEvidence.pglSignature);
 
     const totalPipelineDuration = Date.now() - pipelineStartTime;
     const finalPipelineResult: Substrate8LayerPipelineResult = {
@@ -1629,7 +1676,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
       requestedCapabilityId: capabilityId,
       executingSubject: subject,
       receiptId: receipt.receiptId,
-      pglProofSignature: pglSig,
+      pglProofSignature: actionEvidence.pglSignature,
       settlementTxHash: payoutTxHash,
       x402GasSettled: gasSettled,
       layers: {
@@ -1645,6 +1692,189 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     };
 
     res.json(finalPipelineResult);
+  });
+
+  // =========================================================================
+  // 12. DEDICATED EVIDENCE & MEASUREMENT LAYER APIS
+  // =========================================================================
+
+  // 12.1 Evidence Records & Ledger
+  app.get('/api/substrate/evidence/records', (req, res) => {
+    res.json({
+      records: dbStore.getActionEvidenceRecords(),
+      merkleTree: dbStore.getEvidenceMerkleTree(),
+      totalEvidenceRecords: dbStore.getActionEvidenceRecords().length,
+    });
+  });
+
+  // 12.2 Merkle Tree & Proof Generation
+  app.get('/api/substrate/evidence/merkle', (req, res) => {
+    const tree = dbStore.getEvidenceMerkleTree();
+    res.json(tree);
+  });
+
+  app.get('/api/substrate/evidence/proof/:index', (req, res) => {
+    const index = parseInt(req.params.index, 10);
+    const proof = dbStore.getEvidenceMerkleProofForIndex(isNaN(index) ? 0 : index);
+    res.json(proof);
+  });
+
+  // 12.3 Action Signature Generation Engine
+  app.post('/api/substrate/evidence/generate', (req, res) => {
+    const {
+      transactionId = 'tx-' + crypto.randomBytes(4).toString('hex'),
+      capabilityId = 'cap-compute-v1',
+      subject = 'agent:veklom-root-001',
+      cappoGrantId = 'cappo-grant-alpha-001',
+      requestPayload = { action: 'compute', payload: 'sample' },
+      responsePayload = { status: 'COMPLETE', result: 42 },
+      executingNodeId = 'node-us-east-metal',
+      executingNodeName = 'Sovereign Bare-Metal Enclave',
+    }: ActionSignatureRequest = req.body;
+
+    const existing = dbStore.getActionEvidenceRecords();
+    const lastParentHash = existing[0]?.blockHash || '0x0000000000000000000000000000000000000000000000000000000000000000';
+    const nextBlockHeight = existing.length + 1;
+
+    const evidence = generateActionEvidence(
+      {
+        transactionId,
+        capabilityId,
+        subject,
+        cappoGrantId,
+        requestPayload,
+        responsePayload,
+        executingNodeId,
+        executingNodeName,
+      },
+      lastParentHash,
+      nextBlockHeight
+    );
+
+    dbStore.addActionEvidenceRecord(evidence);
+
+    res.status(201).json({
+      success: true,
+      evidence,
+      merkleLeaf: evidence.merkleLeafHash,
+      merkleTree: dbStore.getEvidenceMerkleTree(),
+    });
+  });
+
+  // 12.4 Deep Cryptographic Action Verification
+  app.post('/api/substrate/evidence/verify', (req, res) => {
+    const {
+      evidenceId,
+      transactionId,
+      requestPayload,
+      responsePayload,
+      pglSignature,
+      expectedParentHash,
+    } = req.body;
+
+    let targetEvidence: Partial<ActionEvidenceRecord> | undefined;
+
+    if (evidenceId || transactionId) {
+      targetEvidence = dbStore.getActionEvidenceRecord(evidenceId || transactionId);
+    }
+
+    if (!targetEvidence && pglSignature) {
+      targetEvidence = {
+        transactionId: transactionId || 'tx-adhoc',
+        capabilityId: req.body.capabilityId || 'cap-compute-v1',
+        subject: req.body.subject || 'agent:caller',
+        executingNodeId: req.body.executingNodeId || 'node-us-east-metal',
+        requestPayloadHash: req.body.requestPayloadHash || hashPayload(requestPayload || {}),
+        responseHash: req.body.responseHash || hashPayload(responsePayload || {}),
+        pglSignature,
+        parentBlockHash: expectedParentHash || '0x0000000000000000000000000000000000000000000000000000000000000000',
+        nonce: req.body.nonce || '0x_nonce_default',
+        timestamp: req.body.timestamp || new Date().toISOString(),
+      };
+    }
+
+    if (!targetEvidence) {
+      return res.status(400).json(
+        buildProblemDetails('missing-evidence', 'Missing Evidence Target', 400, 'evidenceId, transactionId, or signature payload required', req.originalUrl)
+      );
+    }
+
+    const report = verifyActionEvidence(targetEvidence, requestPayload, responsePayload, expectedParentHash);
+
+    res.json({
+      success: report.valid,
+      tamperDetected: report.tamperDetected,
+      report,
+    });
+  });
+
+  // 12.5 Live Tamper Injection Sandbox
+  app.post('/api/substrate/evidence/tamper', (req, res) => {
+    const { evidenceId, tamperPayload, tamperSignature, tamperResponse } = req.body;
+
+    const evidence = dbStore.getActionEvidenceRecord(evidenceId);
+    if (!evidence) {
+      return res.status(404).json(
+        buildProblemDetails('not-found', 'Evidence Not Found', 404, `No evidence record found with ID ${evidenceId}`, req.originalUrl)
+      );
+    }
+
+    const patch: any = {};
+    if (tamperPayload) patch.requestPayloadHash = hashPayload(tamperPayload);
+    if (tamperResponse) patch.responseHash = hashPayload(tamperResponse);
+    if (tamperSignature) patch.pglSignature = 'pgl_tampered_sig_' + crypto.randomBytes(8).toString('hex');
+
+    const tamperedRecord = dbStore.tamperActionEvidence(evidence.id, patch);
+
+    // Verify right away to demonstrate fail-safe detection
+    const verifyReport = verifyActionEvidence(tamperedRecord || evidence);
+
+    res.json({
+      tampered: true,
+      tamperedRecord,
+      failSafeVerificationReport: verifyReport,
+    });
+  });
+
+  // 12.6 Action Execution Confirmation & Measurement Engine
+  app.get('/api/substrate/measurement/certificates', (req, res) => {
+    res.json(dbStore.getConfirmationCertificates());
+  });
+
+  app.post('/api/substrate/measurement/confirm', (req, res) => {
+    const confirmationReq: ActionConfirmationRequest = req.body;
+    const capabilityDef = CAPABILITY_CATALOG.find((c) => c.id === confirmationReq.capabilityId);
+    const nodeDef = dbStore.getSubstrateNodes().find((n) => n.id === confirmationReq.executingNodeId);
+
+    const certificate = confirmActionExecution(confirmationReq, capabilityDef, nodeDef);
+    dbStore.addConfirmationCertificate(certificate);
+
+    res.status(201).json({
+      success: certificate.overallConfirmationStatus !== 'EXECUTION_FAILED',
+      certificate,
+    });
+  });
+
+  // 12.7 Aggregate Telemetry & SLA Metrics
+  app.get('/api/substrate/measurement/metrics', (req, res) => {
+    const certs = dbStore.getConfirmationCertificates();
+    const totalCerts = Math.max(1, certs.length);
+    const fullyConfirmedCount = certs.filter((c) => c.overallConfirmationStatus === 'FULLY_CONFIRMED').length;
+    const slaPassCount = certs.filter((c) => c.dimensions.slaLatency.slaCompliant).length;
+    const schemaPassCount = certs.filter((c) => c.dimensions.schemaConformance.status === 'PASSED').length;
+    const avgLatency = Math.round(certs.reduce((acc, c) => acc + c.dimensions.slaLatency.actualWallClockLatencyMs, 0) / totalCerts);
+    const avgScore = Math.round(certs.reduce((acc, c) => acc + c.confirmationScorePct, 0) / totalCerts);
+
+    res.json({
+      totalCertificatesIssued: certs.length,
+      averageConfirmationScorePct: avgScore,
+      fullyConfirmedRatePct: +((fullyConfirmedCount / totalCerts) * 100).toFixed(1),
+      slaComplianceRatePct: +((slaPassCount / totalCerts) * 100).toFixed(1),
+      schemaComplianceRatePct: +((schemaPassCount / totalCerts) * 100).toFixed(1),
+      averageWallClockLatencyMs: avgLatency,
+      systemUptimeAttestedPct: 99.995,
+      latestCertificates: certs.slice(0, 5),
+    });
   });
 
   // Vite middleware for dev mode
