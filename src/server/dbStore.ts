@@ -33,8 +33,15 @@ import {
   generateActionEvidence,
   confirmActionExecution,
   buildEvidenceMerkleTree,
-  generateMerkleProof,
+  generateEvidenceMerkleProof,
 } from './cryptoUtils.js';
+import { createDefaultVkgPackages } from './vkgEngine.js';
+import {
+  VkgPackage,
+  BoundedOfflineLease,
+  LocalSubstrateObservation,
+  ReconciliationPayload,
+} from '../types.js';
 
 export interface DBState {
   substrateNodes: SubstrateNode[];
@@ -51,6 +58,10 @@ export interface DBState {
   authorizationReceipts: AuthorizationReceipt[];
   blockedIntents: BlockedIntentRecord[];
   agentIdentities: AgentIdentity[];
+  vkgPackages: VkgPackage[];
+  offlineLeases: BoundedOfflineLease[];
+  localObservations: LocalSubstrateObservation[];
+  reconciliations: ReconciliationPayload[];
   totalGovernedActions: number;
   totalSafeRoutes: number;
   lastSavedAt: string;
@@ -200,7 +211,7 @@ const INITIAL_ACTION_EVIDENCE: ActionEvidenceRecord[] = [
     responseHash: '0x3857b64010a30b0ee11330d172e2764b8bb6d8a211910efc680696b0142cbb86',
     parentBlockHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
     blockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
-    pglSignature: 'pgl_sig_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    pglSignature: '0x_sig_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     merkleLeafHash: '0x1c3a647d6928e4695781a9544974246990264d1f2b604e3391b489d81d2222ff',
     nonce: '0x_ev_nonce_genesis01',
     enclaveHardwareProof: 'enclave_tpm2_attestation_genesis_root',
@@ -220,7 +231,7 @@ const INITIAL_ACTION_EVIDENCE: ActionEvidenceRecord[] = [
     responseHash: '0x5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8',
     parentBlockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
     blockHash: '0xb234a91ef8839cb8a101b0c0349a1d2f9933e144a8029c7d4481b7a00119beef',
-    pglSignature: 'pgl_sig_8d23467189abcd1048aef0011883abefc8821948ae1082c91823901847120199',
+    pglSignature: '0x_sig_8d23467189abcd1048aef0011883abefc8821948ae1082c91823901847120199',
     merkleLeafHash: '0x4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
     nonce: '0x_ev_nonce_herdr_rec99',
     enclaveHardwareProof: 'enclave_tpm2_attestation_k8s_cell_02',
@@ -264,8 +275,15 @@ const INITIAL_CERTIFICATES: ActionExecutionConfirmationCertificate[] = [
         memoryQuotaBytes: 268435456,
         memoryUsagePct: 0.02,
         cpuExecutionMs: 12,
-        sandboxIsolationIntact: true,
-        details: 'Sandbox heap memory bounded at 48.0 KB (0.02% of 256MB quota). Containment intact.',
+        runtimeObservation: {
+          state: 'VERIFIED',
+          isolationLevel: 'HARDWARE_ENCLAVE',
+          verifiedByEvidence: true,
+          evidenceSource: 'TPM_2_0_ENCLAVE_ATTESTATION',
+          measuredAt: '2026-08-16T12:00:01.000Z',
+          details: 'Hardware enclave isolation verified by external TPM attestation.',
+        },
+        details: 'Sandbox heap memory bounded at 48.0 KB (0.02% of 256MB quota). Containment verified.',
       },
       runtimeExit: {
         status: 'PASSED',
@@ -277,18 +295,56 @@ const INITIAL_CERTIFICATES: ActionExecutionConfirmationCertificate[] = [
         details: 'Process terminated cleanly with Exit Code 0. No unhandled exceptions or panic signals.',
       },
       hardwareTelemetry: {
-        status: 'PASSED',
+        status: 'VERIFIED',
         scorePct: 100,
         monotonicCounterDelta: 4,
         uptimeAttestationPct: 99.99,
         enclaveAttestationValid: true,
         nonceFreshness: 'FRESH',
+        hardwareProofState: 'VERIFIED',
         details: 'Hardware TPM attestation verified. Monotonic clock increment verified, uptime attested at 99.99%.',
       },
     },
-    cryptographicAttestationSignature: 'aecc_sig_genesis_root_998127391823019823901823091823',
+    cryptographicAttestationSignature: '0x_aecc_sig_genesis_root_998127391823019823901823091823',
     issuer: 'computless://substrate/measurement-verifier/v2',
     summaryVerdict: 'ACTION CONFIRMED (Score: 98%): Action was executed with full schema compliance, within SLA bounds, and verified hardware telemetry.',
+  },
+];
+
+const INITIAL_OFFLINE_LEASES: BoundedOfflineLease[] = [
+  {
+    leaseId: 'lease-off-tax-v1',
+    workspaceId: 'ws-local-enclave-01',
+    mountId: 'mnt-vkg-tax-calc',
+    capabilityId: 'cap-compute-v1',
+    allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary'],
+    maxExecutions: 50,
+    executionsRemaining: 48,
+    issuedAt: '2026-03-30T10:00:00.000Z',
+    expiresAt: '2026-12-31T23:59:59.000Z',
+    authorityDigest: '0x_lease_auth_tax_digest_98127391823719823',
+    startNonce: '0x_off_nonce_genesis_001',
+    currentNonce: '0x_off_nonce_genesis_003',
+    isRevoked: false,
+  },
+];
+
+const INITIAL_LOCAL_OBSERVATIONS: LocalSubstrateObservation[] = [
+  {
+    id: 'obs-local-001',
+    timestamp: '2026-03-30T10:15:00.000Z',
+    executionId: 'exec-off-001',
+    workspaceId: 'ws-local-enclave-01',
+    capabilityId: 'cap-compute-v1',
+    action: 'calculate_vat',
+    runtimeProfile: 'OFFLINE',
+    requestDigest: '0x_req_obs_hash_001',
+    responseDigest: '0x_resp_obs_hash_001',
+    durationMs: 4.2,
+    memoryBytes: 4096,
+    exitCode: 0,
+    nonce: '0x_off_nonce_genesis_002',
+    reconciled: false,
   },
 ];
 
@@ -324,6 +380,10 @@ export class DatabaseStore {
           authorizationReceipts: parsed.authorizationReceipts || [...INITIAL_RECEIPTS],
           blockedIntents: parsed.blockedIntents || [...INITIAL_BLOCKED],
           agentIdentities: parsed.agentIdentities || [...INITIAL_IDENTITIES],
+          vkgPackages: parsed.vkgPackages || createDefaultVkgPackages(),
+          offlineLeases: parsed.offlineLeases || [...INITIAL_OFFLINE_LEASES],
+          localObservations: parsed.localObservations || [...INITIAL_LOCAL_OBSERVATIONS],
+          reconciliations: parsed.reconciliations || [],
           totalGovernedActions: parsed.totalGovernedActions || 323,
           totalSafeRoutes: parsed.totalSafeRoutes || 184,
           lastSavedAt: parsed.lastSavedAt || new Date().toISOString(),
@@ -332,6 +392,23 @@ export class DatabaseStore {
     } catch (err) {
       console.warn(`[DatabaseStore] Failed to read ${DB_FILE}, initializing default state:`, err);
     }
+
+    const defaultVkg = createDefaultVkgPackages();
+    const defaultLease: BoundedOfflineLease = {
+      leaseId: 'lease-default-offline-001',
+      workspaceId: 'ws-offline-local-01',
+      mountId: 'mnt-vkg-tax-01',
+      capabilityId: 'cap-compute-v1',
+      allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary', 'validate_order'],
+      maxExecutions: 50,
+      executionsRemaining: 50,
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+      authorityDigest: '0x_auth_digest_offline_canonical',
+      startNonce: '0x_off_nonce_100',
+      currentNonce: '0x_off_nonce_100',
+      isRevoked: false,
+    };
 
     const defaultState: DBState = {
       substrateNodes: [...INITIAL_SUBSTRATE_NODES],
@@ -348,6 +425,10 @@ export class DatabaseStore {
       authorizationReceipts: [...INITIAL_RECEIPTS],
       blockedIntents: [...INITIAL_BLOCKED],
       agentIdentities: [...INITIAL_IDENTITIES],
+      vkgPackages: defaultVkg,
+      offlineLeases: [defaultLease],
+      localObservations: [],
+      reconciliations: [],
       totalGovernedActions: 323,
       totalSafeRoutes: 184,
       lastSavedAt: new Date().toISOString(),
@@ -385,12 +466,10 @@ export class DatabaseStore {
     return this.state.confirmationCertificates.find((c) => c.certificateId === id || c.actionId === id || c.transactionId === id);
   }
   public getEvidenceMerkleTree() {
-    const leaves = this.state.actionEvidenceRecords.map((r) => r.merkleLeafHash);
-    return buildEvidenceMerkleTree(leaves);
+    return buildEvidenceMerkleTree(this.state.actionEvidenceRecords);
   }
   public getEvidenceMerkleProofForIndex(index: number) {
-    const leaves = this.state.actionEvidenceRecords.map((r) => r.merkleLeafHash);
-    return generateMerkleProof(leaves, index);
+    return generateEvidenceMerkleProof(index, this.state.actionEvidenceRecords);
   }
   public getFPIProviders(): FPIProvider[] { return this.state.fpiProviders; }
   public getFPIAllocations(): FPIResourceAllocation[] { return this.state.fpiAllocations; }
@@ -399,6 +478,58 @@ export class DatabaseStore {
   public getAuthorizationReceipts(): AuthorizationReceipt[] { return this.state.authorizationReceipts; }
   public getBlockedIntents(): BlockedIntentRecord[] { return this.state.blockedIntents; }
   public getAgentIdentities(): AgentIdentity[] { return this.state.agentIdentities; }
+  public getVkgPackages(): VkgPackage[] { return this.state.vkgPackages || []; }
+  public getVkgPackage(id: string): VkgPackage | undefined {
+    return (this.state.vkgPackages || []).find((p) => p.manifest.packageId === id);
+  }
+  public getOfflineLeases(): BoundedOfflineLease[] { return this.state.offlineLeases || []; }
+  public getOfflineLease(id: string): BoundedOfflineLease | undefined {
+    return (this.state.offlineLeases || []).find((l) => l.leaseId === id);
+  }
+  public getLocalObservations(): LocalSubstrateObservation[] { return this.state.localObservations || []; }
+  public getReconciliations(): ReconciliationPayload[] { return this.state.reconciliations || []; }
+
+  public addVkgPackage(pkg: VkgPackage): VkgPackage {
+    if (!this.state.vkgPackages) this.state.vkgPackages = [];
+    const idx = this.state.vkgPackages.findIndex((p) => p.manifest.packageId === pkg.manifest.packageId);
+    if (idx >= 0) {
+      this.state.vkgPackages[idx] = pkg;
+    } else {
+      this.state.vkgPackages.push(pkg);
+    }
+    this.saveToDisk();
+    return pkg;
+  }
+
+  public addOfflineLease(lease: BoundedOfflineLease): BoundedOfflineLease {
+    if (!this.state.offlineLeases) this.state.offlineLeases = [];
+    this.state.offlineLeases.push(lease);
+    this.saveToDisk();
+    return lease;
+  }
+
+  public addLocalObservation(observation: LocalSubstrateObservation): LocalSubstrateObservation {
+    if (!this.state.localObservations) this.state.localObservations = [];
+    this.state.localObservations.push(observation);
+    this.saveToDisk();
+    return observation;
+  }
+
+  public addReconciliation(payload: ReconciliationPayload): ReconciliationPayload {
+    if (!this.state.reconciliations) this.state.reconciliations = [];
+    this.state.reconciliations.unshift(payload);
+    // Mark reconciled observations
+    if (this.state.localObservations) {
+      for (const obs of this.state.localObservations) {
+        if (payload.localObservations.some((o) => o.id === obs.id)) {
+          obs.reconciled = true;
+          obs.reconciliationBatchId = payload.batchId;
+        }
+      }
+    }
+    this.saveToDisk();
+    return payload;
+  }
 
   // Mutations
   public addActionEvidenceRecord(record: ActionEvidenceRecord): ActionEvidenceRecord {

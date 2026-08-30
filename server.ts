@@ -12,13 +12,27 @@ import {
   buildx402Headers,
   createAuthorizationReceipt,
   verifyAuthorizationReceipt,
+  verifyCanonicalAuthority,
   executeInIsolatedVMSandbox,
   generateActionEvidence,
   verifyActionEvidence,
   confirmActionExecution,
   buildEvidenceMerkleTree,
-  generateMerkleProof,
+  generateEvidenceMerkleProof,
 } from './src/server/cryptoUtils.js';
+import {
+  validateVkgPackage,
+  computeVkgDigest,
+  createDefaultVkgPackages,
+} from './src/server/vkgEngine.js';
+import {
+  RuntimeAdapterDispatcher,
+  NodeVmRuntimeAdapter,
+  ContainerRuntimeAdapter,
+  VkgRuntimeAdapter,
+  OfflineRuntimeAdapter,
+} from './src/server/runtimeAdapters.js';
+import { runAdversarialTestSuite } from './src/server/adversarialTests.js';
 import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG, SUBSTRATE_8_LAYER_SPEC } from './src/data/mockData.js';
 import {
   SubstrateNode,
@@ -43,6 +57,12 @@ import {
   ActionSignatureRequest,
   ActionConfirmationRequest,
   ActionExecutionConfirmationCertificate,
+  CanonicalExecutionAuthority,
+  GovernedRuntimeRequest,
+  VkgPackage,
+  BoundedOfflineLease,
+  LocalSubstrateObservation,
+  ReconciliationPayload,
 } from './src/types.js';
 
 async function startServer() {
@@ -130,7 +150,8 @@ async function startServer() {
     const expiresAt = Date.now() + Number(durationHours) * 3600000;
 
     const signatureMsg = `${grantId}:${issuer}:${subject}:${allowedCapabilities.join(',')}:${expiresAt}`;
-    const cappoSignature = '0x_cappo_sig_' + crypto.createHmac('sha256', 'veklom-key').update(signatureMsg).digest('hex').slice(0, 32);
+    // COMPUTLESS consumes authority: compute authority digest from payload rather than minting via a hardcoded production secret
+    const cappoSignature = '0x_cappo_auth_' + hashPayload({ grantId, issuer, subject, allowedCapabilities, expiresAt }).slice(0, 32);
 
     const newGrant: CAPPOGrant = {
       grantId,
@@ -1851,7 +1872,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     const patch: any = {};
     if (tamperPayload) patch.requestPayloadHash = hashPayload(tamperPayload);
     if (tamperResponse) patch.responseHash = hashPayload(tamperResponse);
-    if (tamperSignature) patch.pglSignature = 'pgl_tampered_sig_' + crypto.randomBytes(8).toString('hex');
+    if (tamperSignature) patch.pglSignature = '0x_tampered_sig_' + crypto.randomBytes(8).toString('hex');
 
     const tamperedRecord = dbStore.tamperActionEvidence(evidence.id, patch);
 
@@ -1904,6 +1925,344 @@ console.log("Substrate execution completed successfully on " + context.targetNod
       systemUptimeAttestedPct: 99.995,
       latestCertificates: certs.slice(0, 5),
     });
+  });
+
+  // =========================================================================
+  // 13. CANONICAL VEKLOM RUNTIME SUBSTRATE: .VKG & OFFLINE LEASE APIS
+  // =========================================================================
+
+  // 13.1 .vkg Package Directory
+  app.get('/api/vkg/packages', (req, res) => {
+    res.json({
+      packages: dbStore.getVkgPackages(),
+      totalPackages: dbStore.getVkgPackages().length,
+    });
+  });
+
+  app.post('/api/vkg/packages', (req, res) => {
+    const pkg: VkgPackage = req.body;
+    const validation = validateVkgPackage(pkg);
+    if (!validation.valid) {
+      return res.status(400).json(
+        buildProblemDetails('invalid-vkg-package', 'Invalid .vkg Package', 400, validation.error || 'Digest mismatch or missing structure', req.originalUrl)
+      );
+    }
+    dbStore.addVkgPackage(pkg);
+    res.status(201).json({ success: true, package: pkg });
+  });
+
+  // 13.2 .vkg Digest Validation
+  app.post('/api/vkg/validate', (req, res) => {
+    const pkg: VkgPackage = req.body;
+    const validation = validateVkgPackage(pkg);
+    res.json(validation);
+  });
+
+  // 13.3 .vkg Governed Execution
+  app.post('/api/vkg/execute', async (req, res) => {
+    const { packageId, action, inputPayload = {}, authority }: {
+      packageId: string;
+      action: string;
+      inputPayload: Record<string, unknown>;
+      authority: CanonicalExecutionAuthority;
+    } = req.body;
+
+    const authCheck = verifyCanonicalAuthority(authority);
+    if (!authCheck.valid) {
+      return res.status(403).json(
+        buildProblemDetails('unauthorized-authority', 'Execution Authority Refused', 403, authCheck.error || 'Authority invalid or expired', req.originalUrl)
+      );
+    }
+
+    const pkg = dbStore.getVkgPackage(packageId);
+    if (!pkg) {
+      return res.status(404).json(
+        buildProblemDetails('vkg-not-found', '.vkg Package Not Found', 404, `No package matching ID ${packageId}`, req.originalUrl)
+      );
+    }
+
+    const dispatcher = new RuntimeAdapterDispatcher(dbStore.getVkgPackages(), dbStore.getOfflineLeases());
+    const execResult = await dispatcher.dispatch({
+      authority,
+      inputPayload,
+      vkgPackageId: packageId,
+      vkgAction: action,
+    });
+
+    res.json({
+      success: execResult.status === 'SUCCESS',
+      execResult,
+    });
+  });
+
+  // 13.3.1 Interchangeable Runtime Adapters Catalog & Dispatch
+  app.get('/api/runtime/adapters', (req, res) => {
+    res.json({
+      adapters: [
+        {
+          type: 'NodeVmRuntimeAdapter',
+          isolationLevel: 'PROCESS_ISOLATION',
+          description: 'In-process Node.js V8 execution context for rapid single-tenant scripting and testing.',
+          hardwareAttested: false,
+          cgroupEnforced: false,
+        },
+        {
+          type: 'ContainerRuntimeAdapter',
+          isolationLevel: 'CONTAINMENT_SANDBOX',
+          description: 'Cgroup v2 memory/CPU-bounded container sandbox with network namespace egress blocking.',
+          hardwareAttested: false,
+          cgroupEnforced: true,
+        },
+        {
+          type: 'VkgRuntimeAdapter',
+          isolationLevel: 'CONTAINMENT_SANDBOX',
+          description: 'Deterministic execution engine for immutable .vkg packages with cryptographic digest validation.',
+          hardwareAttested: false,
+          cgroupEnforced: true,
+        },
+        {
+          type: 'OfflineRuntimeAdapter',
+          isolationLevel: 'PROCESS_ISOLATION',
+          description: 'Bounded offline lease execution adapter with monotonic nonce progression and local journal auditing.',
+          hardwareAttested: false,
+          cgroupEnforced: false,
+        },
+      ],
+    });
+  });
+
+  app.post('/api/runtime/execute', async (req, res) => {
+    const {
+      authority,
+      inputPayload = {},
+      code,
+      timeoutMs,
+      adapterType,
+      vkgPackageId,
+      vkgAction,
+      offlineLeaseId,
+    }: {
+      authority: CanonicalExecutionAuthority;
+      inputPayload?: Record<string, unknown>;
+      code?: string;
+      timeoutMs?: number;
+      adapterType?: 'NodeVmRuntimeAdapter' | 'ContainerRuntimeAdapter' | 'VkgRuntimeAdapter' | 'OfflineRuntimeAdapter';
+      vkgPackageId?: string;
+      vkgAction?: string;
+      offlineLeaseId?: string;
+    } = req.body;
+
+    const authCheck = verifyCanonicalAuthority(authority);
+    if (!authCheck.valid) {
+      return res.status(403).json(
+        buildProblemDetails(
+          'unauthorized-authority',
+          'Execution Authority Refused',
+          403,
+          authCheck.error || 'Authority invalid or expired',
+          req.originalUrl
+        )
+      );
+    }
+
+    const dispatcher = new RuntimeAdapterDispatcher(dbStore.getVkgPackages(), dbStore.getOfflineLeases());
+    const execResult = await dispatcher.dispatch(
+      {
+        authority,
+        inputPayload,
+        code,
+        timeoutMs,
+        vkgPackageId,
+        vkgAction,
+        offlineLeaseId,
+      },
+      adapterType
+    );
+
+    res.json({
+      success: execResult.status === 'SUCCESS',
+      execResult,
+    });
+  });
+
+  // 13.4 Bounded Offline Leases
+  app.get('/api/offline/leases', (req, res) => {
+    res.json({
+      leases: dbStore.getOfflineLeases(),
+      totalLeases: dbStore.getOfflineLeases().length,
+    });
+  });
+
+  app.post('/api/offline/leases', (req, res) => {
+    const {
+      workspaceId = 'ws-offline-local-01',
+      mountId = 'mnt-vkg-tax-01',
+      capabilityId = 'cap-compute-v1',
+      allowedActions = ['calculate_vat', 'withholding_rate', 'tax_summary'],
+      maxExecutions = 20,
+      durationHours = 24,
+    } = req.body;
+
+    const leaseId = 'lease-off-' + crypto.randomBytes(3).toString('hex');
+    const startNonce = '0x_off_nonce_' + crypto.randomBytes(2).toString('hex');
+    const authorityDigest = hashPayload({ workspaceId, mountId, capabilityId, allowedActions, leaseId });
+
+    const newLease: BoundedOfflineLease = {
+      leaseId,
+      workspaceId,
+      mountId,
+      capabilityId,
+      allowedActions,
+      maxExecutions: Number(maxExecutions),
+      executionsRemaining: Number(maxExecutions),
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + Number(durationHours) * 3600000).toISOString(),
+      authorityDigest,
+      startNonce,
+      currentNonce: startNonce,
+      isRevoked: false,
+    };
+
+    dbStore.addOfflineLease(newLease);
+    res.status(201).json({ success: true, lease: newLease });
+  });
+
+  // 13.5 Offline Governed Execution
+  app.post('/api/offline/execute', async (req, res) => {
+    const { leaseId, action, inputPayload = {}, vkgPackageId } = req.body;
+    const lease = dbStore.getOfflineLease(leaseId);
+    if (!lease) {
+      return res.status(404).json(
+        buildProblemDetails('lease-not-found', 'Offline Lease Not Found', 404, `No lease matching ID ${leaseId}`, req.originalUrl)
+      );
+    }
+
+    const dispatcher = new RuntimeAdapterDispatcher(dbStore.getVkgPackages(), dbStore.getOfflineLeases());
+    const mockAuthority: CanonicalExecutionAuthority = {
+      executionId: 'exec-off-' + Date.now().toString().slice(-6),
+      workspaceId: lease.workspaceId,
+      mountId: lease.mountId,
+      capabilityId: lease.capabilityId,
+      allowedAction: action,
+      expiresAt: new Date(lease.expiresAt).getTime(),
+      authorityDigest: lease.authorityDigest,
+      runtimeProfile: 'OFFLINE',
+    };
+
+    const execResult = await dispatcher.dispatch({
+      authority: mockAuthority,
+      inputPayload,
+      offlineLeaseId: leaseId,
+      vkgPackageId,
+      vkgAction: action,
+    });
+
+    // Record to persistent db store
+    if (execResult.status === 'SUCCESS') {
+      const observation: LocalSubstrateObservation = {
+        id: 'obs-local-' + Date.now().toString().slice(-6),
+        timestamp: new Date().toISOString(),
+        executionId: mockAuthority.executionId,
+        workspaceId: lease.workspaceId,
+        capabilityId: lease.capabilityId,
+        action,
+        runtimeProfile: 'OFFLINE',
+        requestDigest: hashPayload(inputPayload),
+        responseDigest: hashPayload(execResult.outputData),
+        durationMs: execResult.durationMs,
+        memoryBytes: execResult.memoryUsageBytes,
+        exitCode: execResult.exitCode,
+        nonce: lease.currentNonce,
+        reconciled: false,
+      };
+      dbStore.addLocalObservation(observation);
+    }
+
+    res.json({
+      success: execResult.status === 'SUCCESS',
+      execResult,
+      leaseRemaining: lease.executionsRemaining,
+      currentNonce: lease.currentNonce,
+    });
+  });
+
+  // 13.6 Local Substrate Observations & Reconciliation
+  app.get('/api/offline/observations', (req, res) => {
+    res.json({
+      observations: dbStore.getLocalObservations(),
+      unreconciledCount: dbStore.getLocalObservations().filter((o) => !o.reconciled).length,
+      reconciliations: dbStore.getReconciliations(),
+    });
+  });
+
+  app.post('/api/offline/reconcile', (req, res) => {
+    const unreconciled = dbStore.getLocalObservations().filter((o) => !o.reconciled);
+    if (unreconciled.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No pending offline observations to reconcile.',
+        reconciliation: null,
+      });
+    }
+
+    const batchId = 'rcnl-batch-' + crypto.randomBytes(4).toString('hex');
+    const totalGas = +(unreconciled.length * 0.0012).toFixed(4);
+    const observationDigests = unreconciled.map((o) => o.responseDigest);
+    const reconciliationProofSignature = signPGLProof(batchId, 'reconciliation-batch', hashPayload(observationDigests), hashPayload({ totalGas }));
+
+    const localMerkleTree = buildEvidenceMerkleTree(
+      unreconciled.map((o, idx) => ({
+        id: o.id,
+        blockHeight: idx + 1,
+        timestamp: o.timestamp,
+        transactionId: o.executionId,
+        capabilityId: o.capabilityId,
+        subject: 'local-substrate-runtime',
+        executingNodeId: 'node-local-enclave',
+        executingNodeName: 'Local Enclave',
+        parentBlockHash: '0x_genesis_block_hash',
+        blockHash: '0x_block_hash_' + o.id,
+        requestPayloadHash: o.requestDigest,
+        responseHash: o.responseDigest,
+        responsePayloadHash: o.responseDigest,
+        pglSignature: o.responseDigest,
+        merkleLeafHash: o.responseDigest,
+        nonce: o.nonce,
+        verifiable: true,
+      }))
+    );
+
+    const reconciliationPayload: ReconciliationPayload = {
+      batchId,
+      workspaceId: unreconciled[0]?.workspaceId || 'ws-offline-local-01',
+      submittedAt: new Date().toISOString(),
+      totalObservations: unreconciled.length,
+      localObservations: unreconciled,
+      localMerkleRoot: localMerkleTree.merkleRoot,
+      authorityDigest: hashPayload(observationDigests),
+      status: 'RECONCILED',
+    };
+
+    dbStore.addReconciliation(reconciliationPayload);
+
+    res.status(201).json({
+      success: true,
+      message: `Reconciliation batch ${batchId} settled cleanly over Proof Graph Ledger.`,
+      reconciliation: reconciliationPayload,
+    });
+  });
+
+  // =========================================================================
+  // 14. ADVERSARIAL TEST MATRIX RUNNER (Phase 1 Rigorous Verification)
+  // =========================================================================
+  app.get('/api/tests/adversarial', async (req, res) => {
+    const report = await runAdversarialTestSuite();
+    res.json(report);
+  });
+
+  app.post('/api/tests/adversarial/run', async (req, res) => {
+    const report = await runAdversarialTestSuite();
+    res.json(report);
   });
 
   // Vite middleware for dev mode

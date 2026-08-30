@@ -155,6 +155,20 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('vkgSubstrate')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
+              activeTab === 'vkgSubstrate'
+                ? 'bg-gradient-to-r from-indigo-600/50 to-purple-600/40 text-white border border-indigo-400/50 shadow-md shadow-indigo-500/10'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <span>Runtime Substrate</span>
+            <span className="px-1.5 py-0.5 text-[10px] bg-purple-500/20 text-purple-300 rounded font-mono font-bold">
+              .vkg / Leases
+            </span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('api')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
               activeTab === 'api'

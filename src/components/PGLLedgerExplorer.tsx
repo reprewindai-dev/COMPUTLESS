@@ -560,20 +560,36 @@ export const PGLLedgerExplorer: React.FC<PGLLedgerExplorerProps> = ({ records })
                   </p>
                 </div>
 
-                {/* Dimension 3: Resource Containment (15%) */}
+                {/* Dimension 3: Resource Containment & RuntimeObservation (15%) */}
                 <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-200 flex items-center space-x-1.5">
                       <Cpu className="h-3.5 w-3.5 text-amber-400" />
-                      <span>3. Resource Containment (Weight: 15%)</span>
+                      <span>3. Resource Containment & Runtime Observation (Weight: 15%)</span>
                     </span>
-                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 rounded text-[10px] font-bold">
-                      {(selectedCertificate.dimensions.resourceContainment.memoryUsedBytes / 1024).toFixed(1)} KB Used
-                    </span>
+                    <div className="flex items-center space-x-2">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        selectedCertificate.dimensions.resourceContainment.runtimeObservation?.state === 'VERIFIED'
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : selectedCertificate.dimensions.resourceContainment.runtimeObservation?.state === 'OBSERVED'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : 'bg-slate-700/50 text-slate-400 border border-slate-700'
+                      }`}>
+                        {selectedCertificate.dimensions.resourceContainment.runtimeObservation?.state || 'UNAVAILABLE'}
+                      </span>
+                      <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px] font-bold">
+                        {(selectedCertificate.dimensions.resourceContainment.memoryUsedBytes / 1024).toFixed(1)} KB Used
+                      </span>
+                    </div>
                   </div>
                   <p className="text-[11px] text-slate-400">
                     {selectedCertificate.dimensions.resourceContainment.details}
                   </p>
+                  {selectedCertificate.dimensions.resourceContainment.runtimeObservation?.evidenceSource && (
+                    <p className="text-[10px] text-emerald-400/90 font-mono">
+                      Evidence Source: {selectedCertificate.dimensions.resourceContainment.runtimeObservation.evidenceSource}
+                    </p>
+                  )}
                 </div>
 
                 {/* Dimension 4: Runtime Status (20%) */}

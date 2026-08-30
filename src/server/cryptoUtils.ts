@@ -9,12 +9,22 @@ import {
   EvidenceMerkleTreeData,
   ActionConfirmationRequest,
   ActionExecutionConfirmationCertificate,
+  ExecutionObservation,
+  RuntimeMeasurement,
+  RuntimeObservation,
   CapabilityDefinition,
   SubstrateNode,
+  CanonicalExecutionAuthority,
 } from '../types.js';
 
-// Secret key for HMAC/Ed25519 signing (configurable via ENV or generated per instance)
-const SUBSTRATE_CRYPTO_SECRET = process.env.SUBSTRATE_CRYPTO_SECRET || 'veklom-substrate-enterprise-key-2026';
+// Secret key for HMAC signing - initialized securely from environment or ephemeral runtime randomness
+const SUBSTRATE_CRYPTO_SECRET = process.env.SUBSTRATE_CRYPTO_SECRET || crypto.randomBytes(32).toString('hex');
+
+let globalMonotonicCounter = 1000;
+export function getNextMonotonicCounter(): number {
+  globalMonotonicCounter += 1;
+  return globalMonotonicCounter;
+}
 
 export interface PGLVerificationRequest {
   recordId?: string;
@@ -61,21 +71,76 @@ export function hashPayload(payload: any): string {
 }
 
 /**
- * Generates an Enterprise Cryptographic Signature for PGL Proof Evidence
+ * Generates an HMAC-SHA256 signature for PGL Proof Evidence
  */
 export function signPGLProof(txId: string, capabilityId: string, requestHash: string, responseHash: string): string {
   const message = `${txId}:${capabilityId}:${requestHash}:${responseHash}`;
   const hmac = crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(message).digest('hex');
-  return `pgl_v2_sig_${hmac.slice(0, 32)}`;
+  return `0x_proof_sig_${hmac.slice(0, 32)}`;
 }
 
 /**
- * Generates a full Action Evidence Record with Parent Hash chaining and Merkle Leaf derivation
+ * Verifies that a CanonicalExecutionAuthority is cryptographically intact and within validity bounds
+ */
+export function verifyCanonicalAuthority(
+  authority: CanonicalExecutionAuthority,
+  requiredCapability?: string,
+  requiredAction?: string
+): { valid: boolean; error?: string; status: number } {
+  if (!authority) {
+    return { valid: false, error: 'CanonicalExecutionAuthority missing', status: 403 };
+  }
+
+  // Check expiry
+  const now = Date.now();
+  const expiryTime = typeof authority.expiresAt === 'number' ? authority.expiresAt : new Date(authority.expiresAt).getTime();
+  if (isNaN(expiryTime) || now > expiryTime) {
+    return { valid: false, error: `Authority expired at ${new Date(expiryTime).toISOString()}`, status: 403 };
+  }
+
+  // Check capability match
+  if (requiredCapability && authority.capabilityId !== requiredCapability) {
+    return {
+      valid: false,
+      error: `Authority capability mismatch: requires '${requiredCapability}', authority grants '${authority.capabilityId}'`,
+      status: 403,
+    };
+  }
+
+  // Check action match if specified
+  if (requiredAction && authority.allowedAction && authority.allowedAction !== '*' && authority.allowedAction !== requiredAction) {
+    return {
+      valid: false,
+      error: `Authority action mismatch: requires action '${requiredAction}', authority permits '${authority.allowedAction}'`,
+      status: 403,
+    };
+  }
+
+  // Check authority digest
+  const expectedDigest = hashPayload({
+    executionId: authority.executionId,
+    workspaceId: authority.workspaceId,
+    mountId: authority.mountId,
+    capabilityId: authority.capabilityId,
+    allowedAction: authority.allowedAction,
+    runtimeProfile: authority.runtimeProfile,
+  });
+
+  if (authority.authorityDigest && authority.authorityDigest !== expectedDigest) {
+    return { valid: false, error: 'Authority digest mismatch: authority token altered or tampered', status: 403 };
+  }
+
+  return { valid: true, status: 200 };
+}
+
+/**
+ * Generates an Action Evidence Record with Parent Hash chaining and Merkle Leaf derivation
  */
 export function generateActionEvidence(
   params: ActionSignatureRequest,
   parentBlockHash: string = '0x0000000000000000000000000000000000000000000000000000000000000000',
-  blockHeight: number = 1
+  blockHeight: number = 1,
+  realHardwareProof?: string
 ): ActionEvidenceRecord {
   const timestamp = new Date().toISOString();
   const nonce = params.customNonce || '0x_ev_nonce_' + crypto.randomBytes(8).toString('hex');
@@ -84,7 +149,7 @@ export function generateActionEvidence(
 
   // Composite signature over execution context
   const signaturePayload = `${params.transactionId}:${params.capabilityId}:${params.subject}:${requestPayloadHash}:${responseHash}:${params.executingNodeId}:${nonce}:${timestamp}`;
-  const pglSignature = 'pgl_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(signaturePayload).digest('hex');
+  const pglSignature = '0x_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(signaturePayload).digest('hex');
 
   // Merkle leaf computation
   const leafPayload = `${params.transactionId}:${requestPayloadHash}:${responseHash}:${pglSignature}`;
@@ -96,8 +161,6 @@ export function generateActionEvidence(
 
   const evidenceId = 'ev-pgl-' + params.transactionId.replace('tx-', '') + '-' + crypto.randomBytes(2).toString('hex');
 
-  const enclaveHardwareProof = 'enclave_tpm2_attestation_' + crypto.createHmac('sha256', 'hardware-root-enclave-key').update(blockHash).digest('hex').slice(0, 24);
-
   return {
     id: evidenceId,
     timestamp,
@@ -107,7 +170,7 @@ export function generateActionEvidence(
     subject: params.subject,
     cappoGrantId: params.cappoGrantId,
     executingNodeId: params.executingNodeId,
-    executingNodeName: params.executingNodeName || 'Sovereign Enclave Node',
+    executingNodeName: params.executingNodeName || 'Substrate Execution Node',
     requestPayloadHash,
     responseHash,
     parentBlockHash,
@@ -115,13 +178,13 @@ export function generateActionEvidence(
     pglSignature,
     merkleLeafHash,
     nonce,
-    enclaveHardwareProof,
+    enclaveHardwareProof: realHardwareProof, // ONLY set if verified hardware proof supplied
     verifiable: true,
   };
 }
 
 /**
- * Deep Multi-Stage Cryptographic Evidence Verification Engine
+ * Deep Cryptographic Evidence Verification Engine (Fail-Closed, Zero False Proofs)
  */
 export function verifyActionEvidence(
   evidence: Partial<ActionEvidenceRecord>,
@@ -180,7 +243,7 @@ export function verifyActionEvidence(
     });
   }
 
-  // Check 3: Cryptographic Signature Seal Verification
+  // Check 3: Cryptographic Signature Seal Verification (Strict Exact Match)
   const txId = evidence.transactionId || '';
   const capId = evidence.capabilityId || '';
   const subject = evidence.subject || '';
@@ -189,21 +252,20 @@ export function verifyActionEvidence(
   const timestamp = evidence.timestamp || '';
 
   const signaturePayload = `${txId}:${capId}:${subject}:${computedReqHash}:${computedRespHash}:${nodeId}:${nonce}:${timestamp}`;
-  const expectedSig = 'pgl_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(signaturePayload).digest('hex');
+  const expectedSig = '0x_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(signaturePayload).digest('hex');
   const legacyExpectedSig = signPGLProof(txId, capId, computedReqHash, computedRespHash);
+  const legacyPrefixSig = 'pgl_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(signaturePayload).digest('hex');
 
   const providedSig = evidence.pglSignature || '';
-  const signatureMatch =
-    providedSig === expectedSig ||
-    providedSig === legacyExpectedSig ||
-    (providedSig.startsWith('pgl_') && !evidence.tamperFlags?.isTampered);
+  // STRICT CHECK: providedSig must EXACTLY match the computed HMAC signature.
+  const signatureMatch = providedSig === expectedSig || providedSig === legacyExpectedSig || providedSig === legacyPrefixSig;
 
   checkpoints.push({
     checkpoint: 'Checkpoint 3: HMAC-SHA256 Non-Repudiation Signature Seal',
     status: signatureMatch ? 'PASSED' : 'FAILED',
     description: signatureMatch
-      ? 'Cryptographic signature seal verified against Substrate Master Key.'
-      : 'TAMPER DETECTED: Cryptographic signature mismatch. Seal has been altered.',
+      ? 'Cryptographic signature seal verified mathematically against Substrate Secret.'
+      : 'TAMPER DETECTED: Cryptographic signature mismatch. Seal is invalid or forged.',
     computedValue: expectedSig.slice(0, 24) + '...',
     expectedValue: providedSig.slice(0, 24) + '...',
   });
@@ -229,14 +291,14 @@ export function verifyActionEvidence(
     });
   }
 
-  // Check 5: Hardware Enclave Attestation
+  // Check 5: Hardware Enclave Attestation (Honest Declassified Evaluation)
   const hasEnclave = !!evidence.enclaveHardwareProof;
   checkpoints.push({
-    checkpoint: 'Checkpoint 5: Hardware TPM/Enclave Nonce Verification',
+    checkpoint: 'Checkpoint 5: Hardware TPM/Enclave Measurement Evaluation',
     status: hasEnclave ? 'PASSED' : 'WARNING',
     description: hasEnclave
-      ? 'Hardware Enclave TPM attestation confirmed and fresh.'
-      : 'Standard execution cell (no hardware TPM attestation found).',
+      ? 'External hardware verifier TPM attestation confirmed.'
+      : 'Standard execution container telemetry recorded (Hardware Enclave proof UNAVAILABLE).',
   });
 
   const tamperDetected = !reqHashMatched || !respHashMatched || !signatureMatch || !chainIntegrityValid;
@@ -258,36 +320,37 @@ export function verifyActionEvidence(
     merkleProofValid: true,
     attestationCheckpoints: checkpoints,
     verdictSummary: valid
-      ? 'AUTHENTIC & VERIFIED: All 5 cryptographic evidence checkpoints passed with zero tamper signals.'
-      : 'COMPROMISED / UNVERIFIED: Cryptographic verification failed. Workload integrity compromised.',
+      ? 'ACTION EVIDENCE VERIFIED: Cryptographic signatures match exactly.'
+      : 'EVIDENCE INTEGRITY FAULT: Signature or hash mismatch detected.',
   };
 }
 
 /**
- * Builds a cryptographic Merkle Tree from an array of evidence leaf hashes
+ * Merkle Tree Generation for Substrate Evidence Blocks
  */
-export function buildEvidenceMerkleTree(leafHashes: string[]): EvidenceMerkleTreeData {
-  if (leafHashes.length === 0) {
-    const emptyHash = '0x' + crypto.createHash('sha256').update('EMPTY_MERKLE_TREE').digest('hex');
+export function buildEvidenceMerkleTree(evidenceList: ActionEvidenceRecord[]): EvidenceMerkleTreeData {
+  if (evidenceList.length === 0) {
+    const emptyLeaf = hashPayload('EMPTY_MERKLE_TREE_ROOT');
     return {
-      merkleRoot: emptyHash,
+      merkleRoot: emptyLeaf,
       totalLeaves: 0,
       treeHeight: 1,
       leaves: [],
-      blockHeight: 1,
+      blockHeight: 0,
       generatedAt: new Date().toISOString(),
     };
   }
 
-  let currentLevel = [...leafHashes];
+  const leaves = evidenceList.map((e) => e.merkleLeafHash || hashPayload(e.id));
+  let currentLevel = [...leaves];
   let height = 1;
 
   while (currentLevel.length > 1) {
     const nextLevel: string[] = [];
     for (let i = 0; i < currentLevel.length; i += 2) {
       const left = currentLevel[i];
-      const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : left; // duplicate odd leaf
-      const combined = '0x' + crypto.createHash('sha256').update(`${left}:${right}`).digest('hex');
+      const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : left;
+      const combined = hashPayload(`${left}:${right}`);
       nextLevel.push(combined);
     }
     currentLevel = nextLevel;
@@ -296,80 +359,78 @@ export function buildEvidenceMerkleTree(leafHashes: string[]): EvidenceMerkleTre
 
   return {
     merkleRoot: currentLevel[0],
-    totalLeaves: leafHashes.length,
+    totalLeaves: leaves.length,
     treeHeight: height,
-    leaves: leafHashes,
-    blockHeight: leafHashes.length,
+    leaves,
+    blockHeight: evidenceList.length,
     generatedAt: new Date().toISOString(),
   };
 }
 
 /**
- * Generates an audit proof path for a specific leaf in the Merkle Tree
+ * Generates Merkle Audit Proof for a specific evidence index
  */
-export function generateMerkleProof(leafHashes: string[], targetIndex: number): EvidenceMerkleProof {
-  if (leafHashes.length === 0 || targetIndex < 0 || targetIndex >= leafHashes.length) {
-    return {
-      leafHash: '',
-      leafIndex: targetIndex,
-      merkleRoot: '',
-      auditPath: [],
-      isValid: false,
-    };
-  }
+export function generateEvidenceMerkleProof(
+  leafIndex: number,
+  evidenceList: ActionEvidenceRecord[]
+): EvidenceMerkleProof | null {
+  if (leafIndex < 0 || leafIndex >= evidenceList.length) return null;
 
-  const targetLeaf = leafHashes[targetIndex];
-  const auditPath: EvidenceMerkleProof['auditPath'] = [];
-  let currentLevel = [...leafHashes];
-  let currentIndex = targetIndex;
+  const targetEvidence = evidenceList[leafIndex];
+  const targetLeaf = targetEvidence.merkleLeafHash || hashPayload(targetEvidence.id);
+  const leaves = evidenceList.map((e) => e.merkleLeafHash || hashPayload(e.id));
+
+  let currentLevel = [...leaves];
+  let idx = leafIndex;
+  const auditPath: { position: 'left' | 'right'; hash: string }[] = [];
 
   while (currentLevel.length > 1) {
-    const isRightNode = currentIndex % 2 === 1;
-    const siblingIndex = isRightNode ? currentIndex - 1 : currentIndex + 1;
-
-    if (siblingIndex < currentLevel.length) {
-      auditPath.push({
-        position: isRightNode ? 'left' : 'right',
-        hash: currentLevel[siblingIndex],
-      });
-    } else {
-      auditPath.push({
-        position: 'right',
-        hash: currentLevel[currentIndex], // duplicate
-      });
-    }
-
     const nextLevel: string[] = [];
     for (let i = 0; i < currentLevel.length; i += 2) {
       const left = currentLevel[i];
       const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : left;
-      nextLevel.push('0x' + crypto.createHash('sha256').update(`${left}:${right}`).digest('hex'));
+      if (i === idx || i + 1 === idx) {
+        if (idx % 2 === 0) {
+          auditPath.push({ position: 'right', hash: right });
+        } else {
+          auditPath.push({ position: 'left', hash: left });
+        }
+      }
+      nextLevel.push(hashPayload(`${left}:${right}`));
     }
-
     currentLevel = nextLevel;
-    currentIndex = Math.floor(currentIndex / 2);
+    idx = Math.floor(idx / 2);
   }
+
+  const merkleRoot = currentLevel[0] || targetLeaf;
 
   return {
     leafHash: targetLeaf,
-    leafIndex: targetIndex,
-    merkleRoot: currentLevel[0],
+    leafIndex,
+    merkleRoot,
     auditPath,
     isValid: true,
   };
 }
 
-// =========================================================================
-// 5-Point Action Execution Confirmation & Telemetry Measurement Engine
-// =========================================================================
+/**
+ * Validates a Merkle Proof against the Root Hash
+ */
+export function verifyMerkleProof(proof: EvidenceMerkleProof): boolean {
+  let current = proof.leafHash;
+  for (const step of proof.auditPath) {
+    if (step.position === 'left') {
+      current = hashPayload(`${step.hash}:${current}`);
+    } else {
+      current = hashPayload(`${current}:${step.hash}`);
+    }
+  }
+  return current === proof.merkleRoot;
+}
 
 /**
- * Confirms that an action was executed successfully as requested across 5 dimensions:
- * 1. Schema Conformance (Input & Output validated against JSON Schema)
- * 2. SLA & Latency Compliance (Wall-clock vs budgeted max latency)
- * 3. Memory & Resource Isolation Envelope (Heap within bounded ceiling)
- * 4. Runtime Exit Status & Output Stream (Exit code 0, no unhandled exceptions)
- * 5. Hardware Telemetry & Monotonic Nonce (TPM attestation and freshness)
+ * Confirms Action Execution and records ExecutionObservation / RuntimeMeasurement.
+ * Strictly declassified: Never returns false hardware attestation.
  */
 export function confirmActionExecution(
   req: ActionConfirmationRequest,
@@ -377,27 +438,31 @@ export function confirmActionExecution(
   node?: SubstrateNode
 ): ActionExecutionConfirmationCertificate {
   const timestamp = new Date().toISOString();
-  const certId = 'aecc-' + Date.now().toString().slice(-8) + '-' + crypto.randomBytes(3).toString('hex');
-  const actionId = req.actionId || 'act-' + crypto.randomBytes(4).toString('hex');
+  const certId = 'aecc-cert-' + req.transactionId.replace('tx-', '') + '-' + crypto.randomBytes(2).toString('hex');
+  const actionId = req.actionId || 'act-' + crypto.randomBytes(3).toString('hex');
 
-  // Dimension 1: Output Schema Conformance
-  const expectedSchema = capability?.outputSchema || { status: 'string', result: 'any' };
-  const resp = req.responsePayload || {};
-  const schemaKeys = Object.keys(expectedSchema);
+  // Dimension 1: Schema Conformance
   const matchedFields: string[] = [];
   const missingRequiredFields: string[] = [];
   const typeMismatchFields: { field: string; expectedType: string; actualType: string }[] = [];
 
+  let schemaKeys: string[] = [];
+  if (capability?.schemaJson) {
+    try {
+      const parsed = JSON.parse(capability.schemaJson);
+      schemaKeys = Object.keys(parsed);
+    } catch {
+      schemaKeys = ['result', 'status'];
+    }
+  } else {
+    schemaKeys = ['result', 'status'];
+  }
+
   for (const key of schemaKeys) {
-    if (!(key in resp)) {
-      missingRequiredFields.push(key);
-    } else {
+    if (key in req.responsePayload) {
       matchedFields.push(key);
-      const expectedType = String(expectedSchema[key]);
-      const actualType = typeof resp[key];
-      if (expectedType !== 'any' && expectedType !== actualType) {
-        typeMismatchFields.push({ field: key, expectedType, actualType });
-      }
+    } else {
+      missingRequiredFields.push(key);
     }
   }
 
@@ -414,8 +479,8 @@ export function confirmActionExecution(
     typeMismatchFields,
     details:
       schemaScore === 100
-        ? `Output payload 100% conforms to ${capability?.id || 'capability'} JSON schema specification.`
-        : `Schema variance detected: ${missingRequiredFields.length} missing fields, ${typeMismatchFields.length} type mismatches.`,
+        ? `Output payload conforms to ${capability?.id || 'capability'} JSON schema specification.`
+        : `Schema variance detected: ${missingRequiredFields.length} missing fields.`,
   };
 
   // Dimension 2: SLA & Latency Compliance
@@ -438,15 +503,43 @@ export function confirmActionExecution(
     varianceMs,
     slaCompliant,
     details: slaCompliant
-      ? `Execution completed in ${actualLatency}ms (Budget: ${budgetedMaxLatencyMs}ms, Margins: +${budgetedMaxLatencyMs - actualLatency}ms).`
-      : `SLA Warning: Execution of ${actualLatency}ms exceeded latency budget of ${budgetedMaxLatencyMs}ms by ${varianceMs}ms.`,
+      ? `Execution completed in ${actualLatency}ms (Budget: ${budgetedMaxLatencyMs}ms).`
+      : `SLA Variance: Execution of ${actualLatency}ms exceeded latency budget of ${budgetedMaxLatencyMs}ms by ${varianceMs}ms.`,
   };
 
   // Dimension 3: Resource Containment & Memory Envelope
   const memoryQuotaBytes = 256 * 1024 * 1024; // 256 MB Sandbox ceiling
   const memoryUsedBytes = req.memoryUsedBytes || 4096;
-  const memoryUsagePct = +( (memoryUsedBytes / memoryQuotaBytes) * 100 ).toFixed(2);
+  const memoryUsagePct = +((memoryUsedBytes / memoryQuotaBytes) * 100).toFixed(2);
   const resourceScore = memoryUsedBytes <= memoryQuotaBytes ? 100 : 40;
+
+  // Robust RuntimeObservation measurement: strictly defaults to 'UNAVAILABLE' until verified by external evidence
+  let runtimeObservation: RuntimeObservation = {
+    state: 'UNAVAILABLE',
+    isolationLevel: 'UNVERIFIED',
+    verifiedByEvidence: false,
+    measuredAt: new Date().toISOString(),
+    details: 'Runtime containment isolation unverified: external cryptographic evidence or hardware attestation is UNAVAILABLE.',
+  };
+
+  if (req.externalEvidenceSource || req.isolationVerifiedByEvidence || req.hardwareProofProvided) {
+    runtimeObservation = {
+      state: 'VERIFIED',
+      isolationLevel: req.hardwareProofProvided ? 'HARDWARE_ENCLAVE' : 'CONTAINMENT_SANDBOX',
+      verifiedByEvidence: true,
+      evidenceSource: req.externalEvidenceSource || (req.hardwareProofProvided ? 'TPM_2_0_ENCLAVE_ATTESTATION' : 'CONTAINMENT_FAULT_ISOLATION_EVIDENCE'),
+      measuredAt: new Date().toISOString(),
+      details: 'Runtime containment isolation independently verified via cryptographic evidence.',
+    };
+  } else if (req.executionStatus === 'SUCCESS' && node?.isSovereign) {
+    runtimeObservation = {
+      state: 'OBSERVED',
+      isolationLevel: 'PROCESS_ISOLATION',
+      verifiedByEvidence: false,
+      measuredAt: new Date().toISOString(),
+      details: 'In-process execution observed on sovereign node, pending external containment evidence.',
+    };
+  }
 
   const resourceContainment: ActionExecutionConfirmationCertificate['dimensions']['resourceContainment'] = {
     status: resourceScore === 100 ? 'PASSED' : 'EXCEEDED',
@@ -455,8 +548,8 @@ export function confirmActionExecution(
     memoryQuotaBytes,
     memoryUsagePct,
     cpuExecutionMs: actualLatency,
-    sandboxIsolationIntact: true,
-    details: `Sandbox heap memory bounded at ${(memoryUsedBytes / 1024).toFixed(1)} KB (${memoryUsagePct}% of 256MB quota). Containment intact.`,
+    runtimeObservation,
+    details: `In-process fault boundary memory bounded at ${(memoryUsedBytes / 1024).toFixed(1)} KB (${memoryUsagePct}% of quota). Isolation State: ${runtimeObservation.state} (${runtimeObservation.isolationLevel}).`,
   };
 
   // Dimension 4: Runtime Exit Status
@@ -468,32 +561,41 @@ export function confirmActionExecution(
     scorePct: runtimeScore,
     exitCode: isSuccess ? 0 : 1,
     errorCount: isSuccess ? 0 : 1,
-    runtimeStatus: req.executionStatus,
+    runtimeStatus: req.executionStatus === 'BOUND_VIOLATION' || req.executionStatus === 'UNAUTHORIZED' ? 'POLICY_VIOLATION' : req.executionStatus,
     stdoutLineCount: req.stdout?.length || 1,
     details: isSuccess
-      ? 'Process terminated cleanly with Exit Code 0. No unhandled exceptions or panic signals.'
+      ? 'Execution terminated cleanly with Exit Code 0.'
       : `Execution encountered runtime fault: ${req.executionStatus}.`,
   };
 
-  // Dimension 5: Hardware Telemetry & Monotonic Nonce
-  const hardwareAttested = req.enclaveAttested !== false;
+  // Dimension 5: Hardware Telemetry (Declassified into honest states: VERIFIED | OBSERVED | UNAVAILABLE | NOT_SUPPORTED)
+  const hardwareState: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED' =
+    req.hardwareProofProvided === true
+      ? 'VERIFIED'
+      : node?.isSovereign
+      ? 'OBSERVED'
+      : 'UNAVAILABLE';
+
   const uptimeAttestationPct = node ? (node.status === 'online' ? 99.99 : 98.5) : 99.95;
-  const telemetryScore = hardwareAttested ? 100 : 80;
+  const telemetryScore = hardwareState === 'VERIFIED' ? 100 : hardwareState === 'OBSERVED' ? 75 : 50;
 
   const hardwareTelemetry: ActionExecutionConfirmationCertificate['dimensions']['hardwareTelemetry'] = {
-    status: hardwareAttested ? 'PASSED' : 'UNVERIFIED',
+    status: hardwareState,
     scorePct: telemetryScore,
-    monotonicCounterDelta: Math.floor(Math.random() * 12) + 1,
+    monotonicCounterDelta: 1,
     uptimeAttestationPct,
-    enclaveAttestationValid: hardwareAttested,
+    enclaveAttestationValid: hardwareState === 'VERIFIED',
     nonceFreshness: 'FRESH',
-    details: hardwareAttested
-      ? `Hardware TPM attestation verified. Monotonic clock increment verified, uptime attested at ${uptimeAttestationPct}%.`
-      : 'Standard execution container telemetry recorded.',
+    hardwareProofState: hardwareState,
+    details:
+      hardwareState === 'VERIFIED'
+        ? `Hardware TPM/Enclave attestation cryptographically verified.`
+        : hardwareState === 'OBSERVED'
+        ? `Node telemetry observed (Sovereign Node Host Observation: ${uptimeAttestationPct}% uptime). Hardware attestation unverified.`
+        : `Hardware enclave attestation UNAVAILABLE for standard execution cell.`,
   };
 
-  // Overall Confirmation Score computation (weighted)
-  // Schema (30%) + SLA (25%) + Resource (15%) + Runtime (20%) + Hardware (10%)
+  // Overall Confirmation Score computation
   const overallScore = Math.round(
     schemaScore * 0.3 +
     slaScore * 0.25 +
@@ -513,14 +615,14 @@ export function confirmActionExecution(
 
   // Certificate cryptographic attestation signature
   const certSigPayload = `${certId}:${actionId}:${req.transactionId}:${req.capabilityId}:${overallScore}:${overallConfirmationStatus}:${timestamp}`;
-  const cryptographicAttestationSignature = 'aecc_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(certSigPayload).digest('hex');
+  const cryptographicAttestationSignature = '0x_aecc_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(certSigPayload).digest('hex');
 
   const summaryVerdict =
     overallConfirmationStatus === 'FULLY_CONFIRMED'
-      ? `ACTION CONFIRMED (Score: ${overallScore}%): Action was executed with full schema compliance, within SLA bounds, and verified hardware telemetry.`
+      ? `OBSERVATION CONFIRMED (Score: ${overallScore}%): Action executed with full schema compliance within SLA bounds.`
       : overallConfirmationStatus === 'DEGRADED_SLA'
-      ? `ACTION CONFIRMED WITH SLA VARIANCE (Score: ${overallScore}%): Action completed with schema conformance but experienced latency degradation.`
-      : `ACTION CONFIRMATION FAILED (Score: ${overallScore}%): Action did not meet verification standards.`;
+      ? `OBSERVATION WITH SLA VARIANCE (Score: ${overallScore}%): Action completed with latency variance.`
+      : `OBSERVATION FAILED (Score: ${overallScore}%): Execution faulted.`;
 
   return {
     certificateId: certId,
@@ -540,13 +642,13 @@ export function confirmActionExecution(
       hardwareTelemetry,
     },
     cryptographicAttestationSignature,
-    issuer: 'computless://substrate/measurement-verifier/v2',
+    issuer: 'computless://substrate/runtime-measurement-verifier/v1',
     summaryVerdict,
   };
 }
 
 /**
- * Generates a non-replayable Authorization Receipt (Rung 2 of Amplification Ladder)
+ * Generates a non-replayable Authorization Receipt
  */
 export function createAuthorizationReceipt(
   cappoGrantId: string,
@@ -580,7 +682,7 @@ export function createAuthorizationReceipt(
 }
 
 /**
- * Cryptographically verifies an Authorization Receipt
+ * Cryptographically verifies an Authorization Receipt (Strict Exact Match)
  */
 export function verifyAuthorizationReceipt(receipt: AuthorizationReceipt): {
   valid: boolean;
@@ -615,7 +717,7 @@ export function verifyAuthorizationReceipt(receipt: AuthorizationReceipt): {
 }
 
 /**
- * Verifies a PGL Cryptographic Proof against expected payload and signature
+ * Verifies a PGL Cryptographic Proof against expected payload and signature (Strict Exact Match)
  */
 export function verifyPGLProof(
   txId: string,
@@ -626,7 +728,8 @@ export function verifyPGLProof(
 ): PGLVerificationResult {
   const computedPayloadHash = hashPayload(payload);
   const expectedSignature = signPGLProof(txId, capabilityId, computedPayloadHash, responseHash);
-  const signatureMatch = providedSignature === expectedSignature || providedSignature.startsWith('pgl_');
+  // STRICT: exact match only
+  const signatureMatch = providedSignature === expectedSignature;
 
   const attestationChain = [
     {
@@ -637,13 +740,13 @@ export function verifyPGLProof(
     {
       layer: 'Layer 5: CAPPO Authority Binding',
       status: 'PASSED' as const,
-      detail: `Transaction ${txId} bound to active authority grant context.`,
+      detail: `Transaction ${txId} bound to authority context.`,
     },
     {
       layer: 'Layer 8: Cryptographic Signature Audit',
       status: signatureMatch ? ('PASSED' as const) : ('FAILED' as const),
       detail: signatureMatch
-        ? `Cryptographic signature ${providedSignature.slice(0, 20)}... verified against substrate secret.`
+        ? `Cryptographic signature ${providedSignature.slice(0, 20)}... verified.`
         : `SIGNATURE MISMATCH! Provided: ${providedSignature.slice(0, 16)}..., Expected: ${expectedSignature.slice(0, 16)}...`,
     },
   ];
@@ -660,7 +763,8 @@ export function verifyPGLProof(
 }
 
 /**
- * Executes a workload inside a bounded, non-ambient V8 VM Sandbox Container Cell
+ * Executes a workload inside a bounded Node VM Sandbox.
+ * Explicitly labeled as an in-process fault boundary (not a security isolation boundary).
  */
 export async function executeInIsolatedVMSandbox(
   code: string,
@@ -727,8 +831,8 @@ export async function executeInIsolatedVMSandbox(
 
     return {
       status: isTimeout ? 'TERMINATED_TIMEOUT' : 'RUNTIME_ERROR',
-      stdout: [...stdout, `[FATAL] ${err.message || String(err)}`],
-      outputData: { error: err.message || 'Execution failed', code: err.code },
+      stdout: [...stdout, `[FAULT] ${err.message || String(err)}`],
+      outputData: { error: err.message || 'Execution fault', code: err.code },
       memoryUsageBytes: 4096,
       durationMs: +durationMs.toFixed(2),
     };

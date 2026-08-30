@@ -34,6 +34,7 @@ import { FederationProviderInterface } from './components/FederationProviderInte
 import { VeklomAmplificationEngine } from './components/VeklomAmplificationEngine';
 import { Substrate8LayerPipelineExplorer } from './components/Substrate8LayerPipelineExplorer';
 import { ArchitectureStackModal } from './components/ArchitectureStackModal';
+import { VkgAndOfflineSubstrate } from './components/VkgAndOfflineSubstrate';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('topology');
@@ -244,6 +245,8 @@ export default function App() {
         {activeTab === 'amplification' && (
           <VeklomAmplificationEngine capabilities={capabilities} />
         )}
+
+        {activeTab === 'vkgSubstrate' && <VkgAndOfflineSubstrate />}
 
         {activeTab === 'fpi' && (
           <FederationProviderInterface

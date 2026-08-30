@@ -537,6 +537,17 @@ export interface SLAEvaluation {
   details: string;
 }
 
+export type RuntimeObservationState = 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED';
+
+export interface RuntimeObservation {
+  state: RuntimeObservationState;
+  isolationLevel: 'HARDWARE_ENCLAVE' | 'CONTAINMENT_SANDBOX' | 'PROCESS_ISOLATION' | 'UNVERIFIED';
+  verifiedByEvidence: boolean;
+  evidenceSource?: string;
+  measuredAt: string;
+  details: string;
+}
+
 export interface ResourceContainmentEvaluation {
   status: 'PASSED' | 'WARNING' | 'EXCEEDED';
   scorePct: number;
@@ -544,7 +555,7 @@ export interface ResourceContainmentEvaluation {
   memoryQuotaBytes: number;
   memoryUsagePct: number;
   cpuExecutionMs: number;
-  sandboxIsolationIntact: boolean;
+  runtimeObservation: RuntimeObservation;
   details: string;
 }
 
@@ -559,12 +570,13 @@ export interface RuntimeExitEvaluation {
 }
 
 export interface HardwareTelemetryEvaluation {
-  status: 'PASSED' | 'UNVERIFIED';
+  status: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED';
   scorePct: number;
   monotonicCounterDelta: number;
   uptimeAttestationPct: number;
   enclaveAttestationValid: boolean;
   nonceFreshness: 'FRESH' | 'EXPIRED' | 'REPLAY_DETECTED';
+  hardwareProofState: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED';
   details: string;
 }
 
@@ -590,6 +602,10 @@ export interface ActionExecutionConfirmationCertificate {
   summaryVerdict: string;
 }
 
+// Canonical Execution Observation / Runtime Measurement (Declassified from false hardware proofs)
+export type ExecutionObservation = ActionExecutionConfirmationCertificate;
+export type RuntimeMeasurement = ActionExecutionConfirmationCertificate;
+
 export interface ActionConfirmationRequest {
   actionId?: string;
   transactionId: string;
@@ -600,8 +616,151 @@ export interface ActionConfirmationRequest {
   responsePayload: Record<string, unknown>;
   actualWallClockLatencyMs: number;
   memoryUsedBytes: number;
-  executionStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION';
+  executionStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION' | 'BOUND_VIOLATION' | 'UNAUTHORIZED';
   stdout?: string[];
   enclaveAttested?: boolean;
+  hardwareProofProvided?: boolean;
+  isolationVerifiedByEvidence?: boolean;
+  externalEvidenceSource?: string;
+}
+
+// =========================================================================
+// COMPUTLESS Canonical Runtime Interfaces & Authority Consumer Contracts
+// =========================================================================
+
+export interface CanonicalExecutionAuthority {
+  executionId: string;
+  workspaceId: string;
+  mountId: string;
+  capabilityId: string;
+  allowedAction: string;
+  expiresAt: string | number;
+  authorityDigest: string;
+  runtimeProfile: 'CONNECTED' | 'COMPUTELESS' | 'OFFLINE';
+  nonce?: string;
+  signature?: string;
+}
+
+export interface BoundedOfflineLease {
+  leaseId: string;
+  workspaceId: string;
+  mountId: string;
+  capabilityId: string;
+  allowedActions: string[];
+  maxExecutions: number;
+  executionsRemaining: number;
+  issuedAt: string;
+  expiresAt: string;
+  authorityDigest: string;
+  startNonce: string;
+  currentNonce: string;
+  isRevoked: boolean;
+}
+
+export interface VkgManifest {
+  packageId: string;
+  name: string;
+  version: string;
+  contentDigest: string; // SHA-256 of immutable payload / code
+  capabilities: string[];
+  allowedActions: string[];
+  memoryCeilingBytes: number;
+  timeoutCeilingMs: number;
+  schemaVersion: string;
+  author?: string;
+}
+
+export interface VkgPackage {
+  manifest: VkgManifest;
+  dataTables: Record<string, unknown>;
+  actionHandlers: Record<string, string>; // Deterministic JavaScript bytecode/code handlers
+  isImmutable: boolean;
+  installedAt: string;
+}
+
+export interface VkgValidationResult {
+  valid: boolean;
+  computedDigest: string;
+  expectedDigest: string;
+  manifestMatch: boolean;
+  error?: string;
+}
+
+export interface GovernedRuntimeRequest {
+  authority: CanonicalExecutionAuthority;
+  inputPayload: Record<string, unknown>;
+  code?: string;
+  timeoutMs?: number;
+  vkgPackageId?: string;
+  vkgAction?: string;
+  offlineLeaseId?: string;
+}
+
+export type RuntimeAdapterType =
+  | 'NodeVmFaultBoundary'
+  | 'NodeVmRuntimeAdapter'
+  | 'ContainerRuntimeAdapter'
+  | 'VkgRuntimeAdapter'
+  | 'LocalProcessRuntime'
+  | 'OfflineRuntimeAdapter'
+  | (string & {});
+
+export const RuntimeAdapterType = {
+  NodeVmFaultBoundary: 'NodeVmFaultBoundary' as const,
+  NodeVmRuntimeAdapter: 'NodeVmRuntimeAdapter' as const,
+  ContainerRuntimeAdapter: 'ContainerRuntimeAdapter' as const,
+  VkgRuntimeAdapter: 'VkgRuntimeAdapter' as const,
+  LocalProcessRuntime: 'LocalProcessRuntime' as const,
+  OfflineRuntimeAdapter: 'OfflineRuntimeAdapter' as const,
+};
+
+export interface RuntimeExecutionResult {
+  status: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'BOUND_VIOLATION' | 'UNAUTHORIZED';
+  stdout: string[];
+  stderr: string[];
+  outputData: Record<string, unknown>;
+  memoryUsageBytes: number;
+  durationMs: number;
+  exitCode: number;
+  adapterType: RuntimeAdapterType;
+  containmentObserved: boolean;
+  isolationLevel?: 'HARDWARE_ENCLAVE' | 'CONTAINMENT_SANDBOX' | 'PROCESS_ISOLATION' | 'UNVERIFIED';
+  measuredError?: string;
+  externalEvidenceSource?: string;
+}
+
+export interface RuntimeAdapter {
+  readonly adapterType: RuntimeAdapterType;
+  readonly isolationLevel: 'HARDWARE_ENCLAVE' | 'CONTAINMENT_SANDBOX' | 'PROCESS_ISOLATION' | 'UNVERIFIED';
+  execute(request: GovernedRuntimeRequest, context?: Record<string, any>): Promise<RuntimeExecutionResult>;
+}
+
+export interface LocalSubstrateObservation {
+  id: string;
+  timestamp: string;
+  executionId: string;
+  workspaceId: string;
+  capabilityId: string;
+  action: string;
+  runtimeProfile: 'CONNECTED' | 'COMPUTELESS' | 'OFFLINE';
+  requestDigest: string;
+  responseDigest: string;
+  durationMs: number;
+  memoryBytes: number;
+  exitCode: number;
+  nonce: string;
+  reconciled: boolean;
+  reconciliationBatchId?: string;
+}
+
+export interface ReconciliationPayload {
+  batchId: string;
+  workspaceId: string;
+  submittedAt: string;
+  totalObservations: number;
+  localObservations: LocalSubstrateObservation[];
+  localMerkleRoot: string;
+  authorityDigest: string;
+  status: 'PENDING' | 'RECONCILED' | 'REJECTED';
 }
 
