@@ -86,7 +86,10 @@ interface Peer {
 
 function peers(): Peer[] {
   return [
-    { name: 'capi', url: fabricConfig.capiUrl, expectedServices: ['cAPI-interlink-console', 'cAPI', 'capi'] },
+    // cAPI serves a static public/protocol.json (schema_version 2.0) that names
+    // itself via `provider` rather than `service`; its route handler would say
+    // 'cAPI-interlink-console'. Accept either.
+    { name: 'capi', url: fabricConfig.capiUrl, expectedServices: ['cAPI-interlink-console', 'cAPI', 'capi', 'veklom-capi'] },
     { name: 'cappo', url: fabricConfig.cappoUrl, expectedServices: ['cappo', 'cappo-backend'] },
     { name: 'pgl', url: fabricConfig.pglUrl, expectedServices: ['gnomledger'] },
     { name: 'lockerphycer', url: fabricConfig.lockerphycerUrl, expectedServices: ['lockerphycer'] },
@@ -136,8 +139,9 @@ async function probePeer(peer: Peer): Promise<DependencyResult> {
     try {
       const res = await timedFetch(`${peer.url}/protocol.json`);
       if (res.ok) {
-        const body = (await res.json()) as { service?: unknown };
-        observed_service = typeof body.service === 'string' ? body.service : null;
+        const body = (await res.json()) as { service?: unknown; provider?: unknown };
+        const named = typeof body.service === 'string' ? body.service : body.provider;
+        observed_service = typeof named === 'string' ? named : null;
         protocol_identity = observed_service && peer.expectedServices.includes(observed_service) ? 'matched' : 'mismatched';
       }
     } catch {

@@ -36,7 +36,9 @@ const fabric = http.createServer(async (req, res) => {
   const route = '/' + rest.join('/');
   if (route === '/health') return send(200, { status: 'ok' });
   if (route === '/protocol.json') {
-    const names: Record<string, string> = { capi: 'cAPI-interlink-console', cappo: 'cappo', pgl: 'gnomledger', locker: 'impostor' };
+    // cAPI's live manifest is a static schema_version 2.0 file with `provider`, not `service`.
+    if (svc === 'capi') return send(200, { schema_version: '2.0', provider: 'veklom-capi', name: 'Interlink-CAPI' });
+    const names: Record<string, string> = { cappo: 'cappo', pgl: 'gnomledger', locker: 'impostor' };
     return send(200, { service: names[svc] });
   }
   const body = await readJson(req);
