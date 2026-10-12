@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import type { NextFunction, Request, Response } from 'express';
 import { SANDBOX_BOUNDARY } from './sandbox.js';
+import { recordExecution } from './fabricData.js';
 
 export type EvidenceLabel =
   | 'VERIFIED_LIVE'
@@ -522,7 +523,25 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
     const mode = fabricConfig.executionMode;
     const body = (req.body ?? {}) as Record<string, unknown>;
 
+    const requestStarted = Date.now();
+    const logRefusal = (status: number, authorization: AuthorizationOutcome | null) =>
+      recordExecution({
+        route: req.path,
+        capabilityId,
+        mode,
+        outcome: 'refused',
+        httpStatus: status,
+        cappoDecision: authorization?.decision ?? null,
+        cappoAuthorizationId: authorization?.authorizationId ?? null,
+        cappoSource: authorization?.source ?? null,
+        pglRecorded: null,
+        pglEventId: null,
+        durationMs: Date.now() - requestStarted,
+        workloadStatus: null,
+      });
+
     if (mode === 'disabled') {
+      logRefusal(503, null);
       return problem(
         res,
         503,
@@ -551,6 +570,7 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
       });
       if (authorization.decision !== 'APPROVED') {
         const unreachable = authorization.source === 'computless-fail-closed';
+        logRefusal(unreachable ? 503 : 403, authorization);
         return problem(
           res,
           unreachable ? 503 : 403,
@@ -584,7 +604,30 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
         authorization,
       };
 
-      if (mode !== 'governed') return originalJson(attach({ ...base, evidence: null }));
+      const logRun = (evidence: { recorded: boolean; eventId?: string } | null) => {
+        const p = (payload ?? {}) as Record<string, unknown>;
+        const workloadStatus =
+          typeof p.status === 'string' ? p.status : typeof p.overallStatus === 'string' ? p.overallStatus : null;
+        recordExecution({
+          route: req.path,
+          capabilityId,
+          mode,
+          outcome: 'ran',
+          httpStatus: res.statusCode,
+          cappoDecision: authorization?.decision ?? null,
+          cappoAuthorizationId: authorization?.authorizationId ?? null,
+          cappoSource: authorization?.source ?? null,
+          pglRecorded: evidence ? evidence.recorded : null,
+          pglEventId: evidence?.eventId ?? null,
+          durationMs: Date.now() - requestStarted,
+          workloadStatus,
+        });
+      };
+
+      if (mode !== 'governed') {
+        logRun(null);
+        return originalJson(attach({ ...base, evidence: null }));
+      }
 
       void recordEvidence({
         summary: `computless ${capabilityId} HTTP ${res.statusCode}`,
@@ -601,7 +644,10 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
           started_at: startedAt.toISOString(),
           finished_at: new Date().toISOString(),
         },
-      }).then((evidence) => originalJson(attach({ ...base, evidence })));
+      }).then((evidence) => {
+        logRun(evidence);
+        originalJson(attach({ ...base, evidence }));
+      });
       return res;
     }) as Response['json'];
 

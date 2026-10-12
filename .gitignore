@@ -9,3 +9,4 @@ coverage/
 
 # Local runtime state (regenerated from seeds by src/server/dbStore.ts)
 data/substrate_db.json
+data/executions.json

@@ -28,6 +28,7 @@ import { validateVkgPackage, vkgDigestEvidence } from './src/server/vkgEngine.js
 import { RuntimeAdapterDispatcher, decideRoute } from './src/server/runtimeAdapters.js';
 import { runAdversarialTestSuite } from './src/server/adversarialTests.js';
 import { registerFabricRoutes, startCapiRegistration, governedExecution, fabricConfig } from './src/server/fabric.js';
+import { registerFabricDataRoutes } from './src/server/fabricData.js';
 import { SANDBOX_BOUNDARY } from './src/server/sandbox.js';
 import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG, SUBSTRATE_8_LAYER_SPEC } from './src/data/mockData.js';
 import {
@@ -107,6 +108,7 @@ async function startServer() {
 
   // Veklom fabric: /health, /health/dependencies, /protocol.json, /protocol/introspect, /api/fabric/status
   registerFabricRoutes(app);
+  registerFabricDataRoutes(app);
 
   // 1. Health check endpoint
   app.get('/api/health', (req, res) => {
