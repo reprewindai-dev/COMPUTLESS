@@ -33,6 +33,7 @@ import {
   OfflineRuntimeAdapter,
 } from './src/server/runtimeAdapters.js';
 import { runAdversarialTestSuite } from './src/server/adversarialTests.js';
+import { registerFabricRoutes, startCapiRegistration, governedExecution } from './src/server/fabric.js';
 import { CAPABILITY_CATALOG, MCP_TOOLS_CATALOG, SUBSTRATE_8_LAYER_SPEC } from './src/data/mockData.js';
 import {
   SubstrateNode,
@@ -70,6 +71,9 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Veklom fabric: /health, /health/dependencies, /protocol.json, /protocol/introspect, /api/fabric/status
+  registerFabricRoutes(app);
 
   // 1. Health check endpoint
   app.get('/api/health', (req, res) => {
@@ -1076,7 +1080,7 @@ Generate a concise, 2-bullet architectural improvement recommendation for the su
   });
 
   // 10.5 Real Topological VM Sandbox Execution Runtime
-  app.post('/api/substrate/sandbox/execute', async (req, res) => {
+  app.post('/api/substrate/sandbox/execute', governedExecution('computless.sandbox.execute'), async (req, res) => {
     const request: SandboxExecutionRequest = req.body;
     const {
       agentId = 'agent:veklom-root-001',
@@ -1266,7 +1270,7 @@ Evaluate recursion invariant R_{n+1} = R_n + Delta E. Give a 1-sentence mathemat
   });
 
   // 11.2 Execute End-to-End 8-Layer Transaction Pipeline
-  app.post('/api/substrate/pipeline/execute', async (req, res) => {
+  app.post('/api/substrate/pipeline/execute', governedExecution('computless.pipeline.execute'), async (req, res) => {
     const pipelineStartTime = Date.now();
     const pipelineId = 'pipe-' + Date.now().toString().slice(-8) + '-' + crypto.randomBytes(2).toString('hex');
     const {
@@ -1959,7 +1963,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
   });
 
   // 13.3 .vkg Governed Execution
-  app.post('/api/vkg/execute', async (req, res) => {
+  app.post('/api/vkg/execute', governedExecution('computless.vkg.execute'), async (req, res) => {
     const { packageId, action, inputPayload = {}, authority }: {
       packageId: string;
       action: string;
@@ -2031,7 +2035,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
     });
   });
 
-  app.post('/api/runtime/execute', async (req, res) => {
+  app.post('/api/runtime/execute', governedExecution('computless.runtime.execute'), async (req, res) => {
     const {
       authority,
       inputPayload = {},
@@ -2128,7 +2132,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
   });
 
   // 13.5 Offline Governed Execution
-  app.post('/api/offline/execute', async (req, res) => {
+  app.post('/api/offline/execute', governedExecution('computless.offline.execute'), async (req, res) => {
     const { leaseId, action, inputPayload = {}, vkgPackageId } = req.body;
     const lease = dbStore.getOfflineLease(leaseId);
     if (!lease) {
@@ -2282,6 +2286,7 @@ console.log("Substrate execution completed successfully on " + context.targetNod
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Computless Cloud Substrate Server] running on http://0.0.0.0:${PORT}`);
+    startCapiRegistration();
   });
 }
 

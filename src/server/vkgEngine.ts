@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import vm from 'vm';
+import { runInChildSandbox } from './sandbox.js';
 import {
   VkgPackage,
   VkgManifest,
@@ -88,11 +88,6 @@ export async function executeVkgAction(
   inputPayload: Record<string, unknown>,
   authority: CanonicalExecutionAuthority
 ): Promise<RuntimeExecutionResult> {
-  const startTime = process.hrtime.bigint();
-  const startMem = process.memoryUsage().heapUsed;
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-
   // Step 1: Validate .vkg package integrity
   const validation = validateVkgPackage(pkg);
   if (!validation.valid) {
@@ -146,88 +141,57 @@ export async function executeVkgAction(
   const handlerCode = pkg.actionHandlers[action];
   const timeoutMs = Math.min(pkg.manifest.timeoutCeilingMs || 3000, 5000);
 
-  // Sandboxed VM environment for .vkg
-  const sandboxEnv = {
-    input: inputPayload,
-    dataTables: Object.freeze(JSON.parse(JSON.stringify(pkg.dataTables || {}))),
-    output: {} as Record<string, unknown>,
-    console: {
-      log: (...args: any[]) => stdout.push(args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')),
-      warn: (...args: any[]) => stdout.push('[WARN] ' + args.map((a) => String(a)).join(' ')),
-      error: (...args: any[]) => stderr.push('[ERROR] ' + args.map((a) => String(a)).join(' ')),
-    },
-    Math,
-    Date,
-    JSON,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    RegExp,
-  };
+  // Run the handler in the child-process sandbox (see sandbox.ts).
+  const wrapped = `(function(input, dataTables, output, console) {\n${handlerCode}\n})(input, dataTables, output, console);`;
+  const r = await runInChildSandbox(
+    wrapped,
+    { input: inputPayload, dataTables: JSON.parse(JSON.stringify(pkg.dataTables || {})) },
+    timeoutMs
+  );
+  const memoryUsageBytes = r.rssBytes ?? 0;
 
-  const context = vm.createContext(sandboxEnv);
-
-  try {
-    const wrappedScript = new vm.Script(`
-      (function(input, dataTables, output, console) {
-        ${handlerCode}
-      })(input, dataTables, output, console);
-    `);
-
-    wrappedScript.runInContext(context, { timeout: timeoutMs });
-
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1_000_000;
-    const endMem = process.memoryUsage().heapUsed;
-    const memoryUsageBytes = Math.max(1024, Math.abs(endMem - startMem));
-
-    // Memory ceiling check
-    if (pkg.manifest.memoryCeilingBytes && memoryUsageBytes > pkg.manifest.memoryCeilingBytes) {
-      return {
-        status: 'BOUND_VIOLATION',
-        stdout,
-        stderr: [`Memory usage ${memoryUsageBytes} exceeded ceiling ${pkg.manifest.memoryCeilingBytes}`],
-        outputData: { error: 'Memory ceiling exceeded', used: memoryUsageBytes, ceiling: pkg.manifest.memoryCeilingBytes },
-        memoryUsageBytes,
-        durationMs: +durationMs.toFixed(2),
-        exitCode: 137,
-        adapterType: 'VkgRuntimeAdapter',
-        containmentObserved: true,
-        measuredError: 'Memory bound violation',
-      };
-    }
-
+  if (r.status === 'MEMORY_LIMIT') {
     return {
-      status: 'SUCCESS',
-      stdout,
-      stderr,
-      outputData: sandboxEnv.output || { status: 'COMPLETED', result: 'OK' },
+      status: 'BOUND_VIOLATION',
+      stdout: r.stdout,
+      stderr: [...r.stderr, r.error?.message ?? 'heap limit exceeded'],
+      outputData: { error: 'Memory limit exceeded', code: 'MEMORY_LIMIT' },
       memoryUsageBytes,
-      durationMs: +durationMs.toFixed(2),
-      exitCode: 0,
+      durationMs: r.durationMs,
+      exitCode: 137,
       adapterType: 'VkgRuntimeAdapter',
       containmentObserved: true,
+      measuredError: r.error?.message,
     };
-  } catch (err: any) {
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1_000_000;
-    const isTimeout = err.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' || err.message?.includes('timed out');
+  }
 
+  if (r.status !== 'SUCCESS') {
+    const isTimeout = r.status === 'TERMINATED_TIMEOUT';
     return {
       status: isTimeout ? 'TERMINATED_TIMEOUT' : 'RUNTIME_ERROR',
-      stdout,
-      stderr: [...stderr, `[FAULT] ${err.message || String(err)}`],
-      outputData: { error: err.message || 'Execution fault', code: err.code || 'RUNTIME_FAULT' },
-      memoryUsageBytes: 4096,
-      durationMs: +durationMs.toFixed(2),
+      stdout: r.stdout,
+      stderr: [...r.stderr, `[FAULT] ${r.error?.message ?? r.status}`],
+      outputData: { error: r.error?.message ?? 'Execution fault', code: r.error?.code ?? 'RUNTIME_FAULT' },
+      memoryUsageBytes,
+      durationMs: r.durationMs,
       exitCode: isTimeout ? 124 : 1,
       adapterType: 'VkgRuntimeAdapter',
       containmentObserved: true,
-      measuredError: err.message,
+      measuredError: r.error?.message,
     };
   }
+
+  return {
+    status: 'SUCCESS',
+    stdout: r.stdout,
+    stderr: r.stderr,
+    outputData: (r.output && typeof r.output === 'object' ? r.output : { value: r.output }) as Record<string, unknown>,
+    memoryUsageBytes,
+    durationMs: r.durationMs,
+    exitCode: 0,
+    adapterType: 'VkgRuntimeAdapter',
+    containmentObserved: true,
+  };
 }
 
 // Built-in canonical .vkg packages

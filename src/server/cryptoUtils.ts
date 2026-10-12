@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import vm from 'vm';
+import { runInChildSandbox } from './sandbox.js';
 import {
   AuthorizationReceipt,
   ActionEvidenceRecord,
@@ -763,8 +763,8 @@ export function verifyPGLProof(
 }
 
 /**
- * Executes a workload inside a bounded Node VM Sandbox.
- * Explicitly labeled as an in-process fault boundary (not a security isolation boundary).
+ * Executes a workload in the child-process sandbox (see sandbox.ts for exactly
+ * what that boundary does and does not restrict).
  */
 export async function executeInIsolatedVMSandbox(
   code: string,
@@ -774,69 +774,21 @@ export async function executeInIsolatedVMSandbox(
   status: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR';
   stdout: string[];
   outputData: Record<string, unknown>;
+  /** Child process RSS when the workload finished (0 when unknown). Not a per-workload quota. */
   memoryUsageBytes: number;
   durationMs: number;
 }> {
-  const stdout: string[] = [];
-  const startTime = process.hrtime.bigint();
-  const startMem = process.memoryUsage().heapUsed;
-
-  const sandboxEnv = {
-    input: inputPayload,
-    output: {} as Record<string, unknown>,
-    console: {
-      log: (...args: any[]) => {
-        stdout.push(args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '));
-      },
-      warn: (...args: any[]) => {
-        stdout.push('[WARN] ' + args.map((a) => String(a)).join(' '));
-      },
-      error: (...args: any[]) => {
-        stdout.push('[ERROR] ' + args.map((a) => String(a)).join(' '));
-      },
-    },
-    Math,
-    Date,
-    JSON,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    RegExp,
-  };
-
-  const context = vm.createContext(sandboxEnv);
-
-  try {
-    const script = new vm.Script(code);
-    script.runInContext(context, { timeout: timeoutMs });
-
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1_000_000;
-    const endMem = process.memoryUsage().heapUsed;
-    const memoryUsageBytes = Math.max(1024, Math.abs(endMem - startMem));
-
-    return {
-      status: 'SUCCESS',
-      stdout,
-      outputData: sandboxEnv.output || { status: 'COMPLETE', payloadProcessed: true },
-      memoryUsageBytes,
-      durationMs: +durationMs.toFixed(2),
-    };
-  } catch (err: any) {
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1_000_000;
-    const isTimeout = err.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' || err.message?.includes('timed out');
-
-    return {
-      status: isTimeout ? 'TERMINATED_TIMEOUT' : 'RUNTIME_ERROR',
-      stdout: [...stdout, `[FAULT] ${err.message || String(err)}`],
-      outputData: { error: err.message || 'Execution fault', code: err.code },
-      memoryUsageBytes: 4096,
-      durationMs: +durationMs.toFixed(2),
-    };
-  }
+  const r = await runInChildSandbox(code, { input: inputPayload, context: { inputPayload } }, timeoutMs);
+  const status = r.status === 'SUCCESS' || r.status === 'TERMINATED_TIMEOUT' ? r.status : 'RUNTIME_ERROR';
+  const stdout = [...r.stdout, ...r.stderr];
+  if (r.error) stdout.push(`[FAULT] ${r.error.message}`);
+  const outputData =
+    r.status === 'SUCCESS'
+      ? r.output && typeof r.output === 'object'
+        ? (r.output as Record<string, unknown>)
+        : { value: r.output }
+      : { error: r.error?.message ?? 'Execution fault', code: r.error?.code ?? r.status };
+  return { status, stdout, outputData, memoryUsageBytes: r.rssBytes ?? 0, durationMs: r.durationMs };
 }
 
 /**
