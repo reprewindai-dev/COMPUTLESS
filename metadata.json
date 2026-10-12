@@ -1,6 +1,6 @@
 {
   "name": "COMPUTLESS",
-  "description": "COMPUTLESS — execution substrate prototype on the Veklom fabric. Runs workload code in a child-process sandbox (no filesystem, no env, network not restricted), asks CAPPO before running when governed, and records evidence to Gnomledger when configured. Sample data is labelled DEMO; no settlement is implemented.",
+  "description": "COMPUTLESS — governed workload runner on the Veklom fabric: CAPPO authorizes each run, Gnomledger records it, cAPI lists the service.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

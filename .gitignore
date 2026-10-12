@@ -7,6 +7,7 @@ coverage/
 .env*
 !.env.example
 
-# Local runtime state (regenerated from seeds by src/server/dbStore.ts)
+# Local runtime state: uploaded .vkg packages (src/server/dbStore.ts) and the
+# log of executions this server ran (src/server/fabricData.ts)
 data/substrate_db.json
 data/executions.json

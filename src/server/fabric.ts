@@ -30,7 +30,7 @@ export type EvidenceLabel =
   | 'DEMO'
   | 'ARCHIVED';
 
-export type ExecutionMode = 'disabled' | 'local-demo' | 'governed';
+export type ExecutionMode = 'disabled' | 'local' | 'governed';
 
 const SERVICE_NAME = 'computless';
 const SERVICE_VERSION = '0.1.0';
@@ -52,9 +52,10 @@ function trimSlash(url: string | null): string | null {
 
 function resolveExecutionMode(cappoConfigured: boolean): ExecutionMode {
   const raw = env('COMPUTLESS_EXECUTION_MODE');
-  if (raw === 'disabled' || raw === 'local-demo' || raw === 'governed') return raw;
+  if (raw === 'disabled' || raw === 'local' || raw === 'governed') return raw;
+  if (raw === 'local-demo') return 'local'; // older name for the same mode
   if (cappoConfigured) return 'governed';
-  return process.env.NODE_ENV === 'production' ? 'disabled' : 'local-demo';
+  return process.env.NODE_ENV === 'production' ? 'disabled' : 'local';
 }
 
 export const fabricConfig = (() => {
@@ -517,7 +518,7 @@ function problem(res: Response, status: number, type: string, title: string, det
  * Express middleware for every endpoint that executes caller-supplied code.
  *
  * disabled   → 503, nothing runs.
- * local-demo → runs without authorization; every response is labelled DEMO.
+ * local      → runs without CAPPO authorization; every response says so (UNVERIFIED).
  * governed   → asks CAPPO first; anything other than APPROVED (deny, needs
  *              approval, CAPPO unreachable, CAPPO unconfigured) returns 403/503
  *              and nothing runs. After the run, evidence is appended to PGL.
@@ -551,7 +552,7 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
         503,
         'execution-disabled',
         'Code execution is disabled',
-        'COMPUTLESS_EXECUTION_MODE is "disabled". Configure CAPPO (governed mode) or set local-demo for local development.',
+        'COMPUTLESS_EXECUTION_MODE is "disabled". Configure CAPPO (governed mode) or set "local" for local development.',
         { governance: { mode } }
       );
     }
@@ -599,11 +600,11 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
 
       const base = {
         mode,
-        evidenceLabel: (mode === 'governed' ? 'VERIFIED_LIVE' : 'DEMO') as EvidenceLabel,
+        evidenceLabel: (mode === 'governed' ? 'VERIFIED_LIVE' : 'UNVERIFIED') as EvidenceLabel,
         note:
           mode === 'governed'
             ? 'Authorized by CAPPO before running. CAPPO decisions are unsigned; the directive is caller-declared.'
-            : 'local-demo: ran WITHOUT authorization. Not proof of anything.',
+            : 'local mode: ran WITHOUT CAPPO authorization and nothing was recorded in Gnomledger.',
         sandbox: SANDBOX_BOUNDARY,
         authorization,
       };
@@ -705,7 +706,6 @@ export async function fabricStatus() {
       pglApiKey: Boolean(fabricConfig.pglApiKey),
       pglAgentId: Boolean(fabricConfig.pglAgentId),
       lockerphycer: Boolean(fabricConfig.lockerphycerUrl),
-      gemini: Boolean(env('GEMINI_API_KEY')),
     },
     registration: getRegistrationState(),
     dependencies,

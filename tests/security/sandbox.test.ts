@@ -40,3 +40,24 @@ test('infinite loops are terminated', async () => {
   const r = await runInChildSandbox('while (true) {}', {}, 300);
   assert.equal(r.status, 'TERMINATED_TIMEOUT');
 });
+
+test('heap exhaustion is reported as MEMORY_LIMIT', async () => {
+  const r = await runInChildSandbox('const a = []; while (true) a.push(new Array(1e5).fill(1.5));', {}, 5000, 32);
+  assert.equal(r.status, 'MEMORY_LIMIT');
+});
+
+test('executeInIsolatedVMSandbox reports the real sandbox status', async () => {
+  const { executeInIsolatedVMSandbox } = await import('../../src/server/cryptoUtils.js');
+  const ok = await executeInIsolatedVMSandbox('output.v = input.n * 2', { n: 21 });
+  assert.equal(ok.status, 'SUCCESS');
+  assert.deepEqual(ok.outputData, { v: 42 });
+  const loop = await executeInIsolatedVMSandbox('while (true) {}', {}, 200);
+  assert.equal(loop.status, 'TERMINATED_TIMEOUT');
+});
+
+test('the adversarial suite passes and every test reports a measured outcome', async () => {
+  const { runAdversarialTestSuite } = await import('../../src/server/adversarialTests.js');
+  const report = await runAdversarialTestSuite();
+  assert.equal(report.allPassed, true, JSON.stringify(report.tests.filter((t) => !t.passed), null, 2));
+  for (const t of report.tests) assert.ok(t.actualOutcome.length > 0, t.testId);
+});

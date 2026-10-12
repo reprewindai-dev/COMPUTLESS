@@ -1,23 +1,23 @@
-import crypto from 'crypto';
 import { runInChildSandbox } from './sandbox.js';
-import {
-  VkgPackage,
-  VkgManifest,
-  VkgValidationResult,
-  CanonicalExecutionAuthority,
-  RuntimeExecutionResult,
-} from '../types.js';
+import type { VkgManifest, VkgPackage, VkgValidationResult, VkgExecutionResult } from '../types.js';
 import { hashPayload } from './cryptoUtils.js';
 
+const MIB = 1024 * 1024;
+/** Hard caps applied whatever a manifest declares. */
+export const VKG_MAX_TIMEOUT_MS = 5000;
+export const VKG_MIN_HEAP_MB = 8;
+export const VKG_MAX_HEAP_MB = 64;
+
 /**
- * Computes a deterministic SHA-256 digest over a .vkg package's content (manifest fields, data tables, handlers)
+ * Deterministic SHA-256 digest over a .vkg package's content (manifest fields,
+ * data tables, handlers).
  */
 export function computeVkgDigest(
   manifest: Omit<VkgManifest, 'contentDigest'>,
   dataTables: Record<string, unknown>,
   actionHandlers: Record<string, string>
 ): string {
-  const contentToHash = {
+  return hashPayload({
     packageId: manifest.packageId,
     version: manifest.version,
     capabilities: manifest.capabilities,
@@ -27,8 +27,37 @@ export function computeVkgDigest(
     schemaVersion: manifest.schemaVersion,
     dataTables,
     actionHandlers,
-  };
-  return hashPayload(contentToHash);
+  });
+}
+
+function shapeError(pkg: any): string | null {
+  if (!pkg || typeof pkg !== 'object' || !pkg.manifest || typeof pkg.manifest !== 'object') {
+    return 'Malformed .vkg package: missing manifest structure.';
+  }
+  const m = pkg.manifest;
+  for (const k of ['packageId', 'name', 'version', 'contentDigest', 'schemaVersion'] as const) {
+    if (typeof m[k] !== 'string' || !m[k]) return `Malformed .vkg manifest: '${k}' must be a non-empty string.`;
+  }
+  for (const k of ['capabilities', 'allowedActions'] as const) {
+    if (!Array.isArray(m[k]) || !m[k].every((v: unknown) => typeof v === 'string')) {
+      return `Malformed .vkg manifest: '${k}' must be an array of strings.`;
+    }
+  }
+  for (const k of ['memoryCeilingBytes', 'timeoutCeilingMs'] as const) {
+    if (typeof m[k] !== 'number' || !Number.isFinite(m[k]) || m[k] <= 0) {
+      return `Malformed .vkg manifest: '${k}' must be a positive number.`;
+    }
+  }
+  if (!pkg.actionHandlers || typeof pkg.actionHandlers !== 'object' || Array.isArray(pkg.actionHandlers)) {
+    return "Malformed .vkg package: 'actionHandlers' must be an object.";
+  }
+  if (!Object.values(pkg.actionHandlers).every((v) => typeof v === 'string')) {
+    return "Malformed .vkg package: every action handler must be a string.";
+  }
+  if (pkg.dataTables !== undefined && (typeof pkg.dataTables !== 'object' || pkg.dataTables === null || Array.isArray(pkg.dataTables))) {
+    return "Malformed .vkg package: 'dataTables' must be an object.";
+  }
+  return null;
 }
 
 /**
@@ -37,291 +66,215 @@ export function computeVkgDigest(
  * authored the package.)
  */
 export function validateVkgPackage(pkg: VkgPackage): VkgValidationResult {
-  if (!pkg || !pkg.manifest) {
-    return {
-      valid: false,
-      computedDigest: '',
-      expectedDigest: '',
-      manifestMatch: false,
-      error: 'Malformed .vkg package: missing manifest structure.',
-    };
+  const malformed = shapeError(pkg);
+  if (malformed) {
+    return { valid: false, computedDigest: '', expectedDigest: String((pkg as any)?.manifest?.contentDigest ?? ''), manifestMatch: false, error: malformed };
   }
 
   const { contentDigest, ...manifestWithoutDigest } = pkg.manifest;
-  const computedDigest = computeVkgDigest(manifestWithoutDigest, pkg.dataTables || {}, pkg.actionHandlers || {});
+  const computedDigest = computeVkgDigest(manifestWithoutDigest, pkg.dataTables || {}, pkg.actionHandlers);
 
-  if (pkg.manifest.contentDigest !== computedDigest) {
+  if (contentDigest !== computedDigest) {
     return {
       valid: false,
       computedDigest,
-      expectedDigest: pkg.manifest.contentDigest,
+      expectedDigest: contentDigest,
       manifestMatch: false,
-      error: `Cryptographic digest mismatch: package '${pkg.manifest.packageId}' has been altered or tampered. Expected ${pkg.manifest.contentDigest}, computed ${computedDigest}.`,
+      error: `Digest mismatch: package '${pkg.manifest.packageId}' content does not match its manifest digest. Expected ${contentDigest}, computed ${computedDigest}.`,
     };
   }
 
-  // Validate action handlers exist for all declared actions
   for (const action of pkg.manifest.allowedActions) {
-    if (!pkg.actionHandlers[action]) {
+    if (typeof pkg.actionHandlers[action] !== 'string') {
       return {
         valid: false,
         computedDigest,
-        expectedDigest: pkg.manifest.contentDigest,
+        expectedDigest: contentDigest,
         manifestMatch: false,
-        error: `Manifest declares action '${action}' but no corresponding handler bytecode exists in .vkg package.`,
+        error: `Manifest declares action '${action}' but the package has no handler for it.`,
       };
     }
   }
 
+  return { valid: true, computedDigest, expectedDigest: contentDigest, manifestMatch: true };
+}
+
+/** The limits a package's manifest imposes on a run, after the server's hard caps. */
+export function vkgLimits(manifest: VkgManifest): { timeoutMs: number; heapLimitMb: number } {
   return {
-    valid: true,
-    computedDigest,
-    expectedDigest: pkg.manifest.contentDigest,
-    manifestMatch: true,
+    timeoutMs: Math.max(1, Math.min(manifest.timeoutCeilingMs, VKG_MAX_TIMEOUT_MS)),
+    heapLimitMb: Math.max(VKG_MIN_HEAP_MB, Math.min(Math.ceil(manifest.memoryCeilingBytes / MIB), VKG_MAX_HEAP_MB)),
+  };
+}
+
+function refused(status: 'DIGEST_MISMATCH' | 'ACTION_NOT_IN_MANIFEST', message: string): VkgExecutionResult {
+  return {
+    status,
+    ran: false,
+    stdout: [],
+    stderr: [message],
+    outputData: { error: message, code: status },
+    rssBytes: null,
+    durationMs: 0,
+    limits: null,
   };
 }
 
 /**
- * Executes a deterministic .vkg action handler within bounded constraints
+ * Runs one action of a .vkg package in the child-process sandbox, after the
+ * package's own checks: digest must match, the action must be in the
+ * manifest's allowedActions, and the manifest's timeout/memory ceilings are
+ * applied. Authorization is not decided here (that is CAPPO, via
+ * fabric.governedExecution).
  */
-export async function executeVkgAction(
-  pkg: VkgPackage,
-  action: string,
-  inputPayload: Record<string, unknown>,
-  authority: CanonicalExecutionAuthority
-): Promise<RuntimeExecutionResult> {
-  // Step 1: Validate .vkg package integrity
+export async function executeVkgAction(pkg: VkgPackage, action: string, inputPayload: Record<string, unknown>): Promise<VkgExecutionResult> {
   const validation = validateVkgPackage(pkg);
-  if (!validation.valid) {
-    return {
-      status: 'BOUND_VIOLATION',
-      stdout: [],
-      stderr: [validation.error || 'Invalid .vkg package'],
-      outputData: { error: validation.error, code: 'VKG_DIGEST_MISMATCH' },
-      memoryUsageBytes: 0,
-      durationMs: 0,
-      exitCode: 1,
-      adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: false,
-      measuredError: validation.error,
-    };
-  }
+  if (!validation.valid) return refused('DIGEST_MISMATCH', validation.error || 'Invalid .vkg package');
 
-  // Step 2: Check authority scope for requested action
   if (!pkg.manifest.allowedActions.includes(action)) {
-    return {
-      status: 'UNAUTHORIZED',
-      stdout: [],
-      stderr: [`Action '${action}' is not in package allowedActions: [${pkg.manifest.allowedActions.join(', ')}]`],
-      outputData: { error: `Action '${action}' not supported by .vkg package`, code: 'ACTION_NOT_IN_MANIFEST' },
-      memoryUsageBytes: 0,
-      durationMs: 0,
-      exitCode: 1,
-      adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: false,
-      measuredError: `Action '${action}' not permitted in .vkg manifest`,
-    };
+    return refused(
+      'ACTION_NOT_IN_MANIFEST',
+      `Action '${action}' is not in the package's allowedActions: [${pkg.manifest.allowedActions.join(', ')}]`
+    );
   }
 
-  // Step 3: Check authority capability match
-  const matchesCapability = pkg.manifest.capabilities.includes(authority.capabilityId);
-  if (!matchesCapability) {
-    return {
-      status: 'UNAUTHORIZED',
-      stdout: [],
-      stderr: [`Authority capability '${authority.capabilityId}' does not match package capabilities [${pkg.manifest.capabilities.join(', ')}]`],
-      outputData: { error: 'Authority capability mismatch', code: 'CAPABILITY_SCOPE_MISMATCH' },
-      memoryUsageBytes: 0,
-      durationMs: 0,
-      exitCode: 1,
-      adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: false,
-      measuredError: `Authority '${authority.capabilityId}' not permitted for package`,
-    };
-  }
-
-  const handlerCode = pkg.actionHandlers[action];
-  const timeoutMs = Math.min(pkg.manifest.timeoutCeilingMs || 3000, 5000);
-
-  // Run the handler in the child-process sandbox (see sandbox.ts).
-  const wrapped = `(function(input, dataTables, output, console) {\n${handlerCode}\n})(input, dataTables, output, console);`;
+  const limits = vkgLimits(pkg.manifest);
+  const wrapped = `(function(input, dataTables, output, console) {\n${pkg.actionHandlers[action]}\n})(input, dataTables, output, console);`;
   const r = await runInChildSandbox(
     wrapped,
     { input: inputPayload, dataTables: JSON.parse(JSON.stringify(pkg.dataTables || {})) },
-    timeoutMs
+    limits.timeoutMs,
+    limits.heapLimitMb
   );
-  const memoryUsageBytes = r.rssBytes ?? 0;
 
-  if (r.status === 'MEMORY_LIMIT') {
-    return {
-      status: 'BOUND_VIOLATION',
-      stdout: r.stdout,
-      stderr: [...r.stderr, r.error?.message ?? 'heap limit exceeded'],
-      outputData: { error: 'Memory limit exceeded', code: 'MEMORY_LIMIT' },
-      memoryUsageBytes,
-      durationMs: r.durationMs,
-      exitCode: 137,
-      adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: true,
-      measuredError: r.error?.message,
-    };
-  }
-
-  if (r.status !== 'SUCCESS') {
-    const isTimeout = r.status === 'TERMINATED_TIMEOUT';
-    return {
-      status: isTimeout ? 'TERMINATED_TIMEOUT' : 'RUNTIME_ERROR',
-      stdout: r.stdout,
-      stderr: [...r.stderr, `[FAULT] ${r.error?.message ?? r.status}`],
-      outputData: { error: r.error?.message ?? 'Execution fault', code: r.error?.code ?? 'RUNTIME_FAULT' },
-      memoryUsageBytes,
-      durationMs: r.durationMs,
-      exitCode: isTimeout ? 124 : 1,
-      adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: true,
-      measuredError: r.error?.message,
-    };
-  }
+  const outputData =
+    r.status === 'SUCCESS'
+      ? ((r.output && typeof r.output === 'object' ? r.output : { value: r.output }) as Record<string, unknown>)
+      : { error: r.error?.message ?? r.status, code: r.error?.code ?? r.status };
 
   return {
-    status: 'SUCCESS',
+    status: r.status,
+    ran: true,
     stdout: r.stdout,
-    stderr: r.stderr,
-    outputData: (r.output && typeof r.output === 'object' ? r.output : { value: r.output }) as Record<string, unknown>,
-    memoryUsageBytes,
+    stderr: r.error ? [...r.stderr, `[FAULT] ${r.error.message}`] : r.stderr,
+    outputData,
+    rssBytes: r.rssBytes,
     durationMs: r.durationMs,
-    exitCode: 0,
-    adapterType: 'VkgRuntimeAdapter',
-    containmentObserved: true,
+    limits,
   };
 }
 
-// Built-in canonical .vkg packages
+function builtIn(manifest: Omit<VkgManifest, 'contentDigest'>, dataTables: Record<string, unknown>, actionHandlers: Record<string, string>): VkgPackage {
+  return {
+    manifest: { ...manifest, contentDigest: computeVkgDigest(manifest, dataTables, actionHandlers) },
+    dataTables,
+    actionHandlers,
+  };
+}
+
+/** The .vkg packages shipped in this repository. Their digests are computed from this source. */
 export function createDefaultVkgPackages(): VkgPackage[] {
-  // 1. Tax Calculation & Compliance Package
-  const taxManifestRaw = {
-    packageId: 'vkg-sovereign-tax-calc-v1',
-    name: 'Demo VAT Calculator (illustrative rates, not tax advice)',
-    version: '1.2.0',
-    capabilities: ['cap-compute-v1', 'cap-compliance-v1'],
-    allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary'],
-    memoryCeilingBytes: 32 * 1024 * 1024,
-    timeoutCeilingMs: 2000,
-    schemaVersion: '1.0.0',
-    author: 'COMPUTLESS repo (built-in demo package)',
-  };
-  const taxDataTables = {
-    vatRates: {
-      US: 0.0,
-      EU: 0.20,
-      UK: 0.20,
-      CH: 0.077,
-      SG: 0.08,
-      JP: 0.10,
+  const vat = builtIn(
+    {
+      packageId: 'vkg-vat-calc-v1',
+      name: 'VAT/GST Calculator',
+      version: '1.3.0',
+      capabilities: ['computless.vkg.execute'],
+      allowedActions: ['calculate_vat', 'tax_summary'],
+      memoryCeilingBytes: 32 * MIB,
+      timeoutCeilingMs: 2000,
+      schemaVersion: '1.0.0',
+      author: 'COMPUTLESS repository (built-in package)',
     },
-    withholdingDefaults: {
-      standard: 0.15,
-      treaty: 0.05,
-      sovereign_exempt: 0.0,
+    {
+      // National standard VAT/GST rates bundled with this package version. Not tax
+      // advice: reduced rates and later rate changes are not covered.
+      standardRates: { GB: 0.2, DE: 0.19, FR: 0.2, CH: 0.081, SG: 0.09, JP: 0.1 },
     },
-  };
-  const taxHandlers = {
-    calculate_vat: `
-      const amount = Number(input.amount || 0);
-      const country = String(input.country || 'US').toUpperCase();
-      const rate = dataTables.vatRates[country] !== undefined ? dataTables.vatRates[country] : 0.15;
-      const vatAmount = Math.round(amount * rate * 100) / 100;
-      const total = Math.round((amount + vatAmount) * 100) / 100;
-      output.country = country;
-      output.baseAmount = amount;
-      output.vatRate = rate;
-      output.vatAmount = vatAmount;
-      output.totalAmount = total;
-      output.deterministic = true;
-      console.log("Calculated VAT for " + country + " @ " + (rate * 100) + "%: " + vatAmount);
-    `,
-    withholding_rate: `
-      const entityType = String(input.entityType || 'standard');
-      const rate = dataTables.withholdingDefaults[entityType] ?? 0.15;
-      output.entityType = entityType;
-      output.withholdingRate = rate;
-      output.applicable = rate > 0;
-    `,
-    tax_summary: `
-      output.supportedCountries = Object.keys(dataTables.vatRates);
-      output.treatyTiers = Object.keys(dataTables.withholdingDefaults);
-      output.status = 'READY';
-    `,
-  };
-  const taxDigest = computeVkgDigest(taxManifestRaw, taxDataTables, taxHandlers);
-  const taxPkg: VkgPackage = {
-    manifest: { ...taxManifestRaw, contentDigest: taxDigest },
-    dataTables: taxDataTables,
-    actionHandlers: taxHandlers,
-    // Stored in a mutable local file; the digest detects changes, it does not prevent them.
-    isImmutable: false,
-    installedAt: new Date().toISOString(),
-    evidenceLabel: 'DEMO',
-  };
+    {
+      calculate_vat: `
+        const amount = Number(input.amount);
+        const country = String(input.country || '').toUpperCase();
+        if (!Number.isFinite(amount) || amount < 0) throw new Error('input.amount must be a non-negative number');
+        const rate = dataTables.standardRates[country];
+        if (rate === undefined) throw new Error('no standard rate bundled for country "' + country + '"; supported: ' + Object.keys(dataTables.standardRates).join(', '));
+        const vatAmount = Math.round(amount * rate * 100) / 100;
+        output.country = country;
+        output.baseAmount = amount;
+        output.vatRate = rate;
+        output.vatAmount = vatAmount;
+        output.totalAmount = Math.round((amount + vatAmount) * 100) / 100;
+        console.log('VAT for ' + country + ' at ' + (rate * 100) + '%: ' + vatAmount);
+      `,
+      tax_summary: `
+        output.supportedCountries = Object.keys(dataTables.standardRates);
+        output.standardRates = dataTables.standardRates;
+      `,
+    }
+  );
 
-  // 2. Order & State Invariant Validator Package
-  const orderManifestRaw = {
-    packageId: 'vkg-order-validator-v1',
-    name: 'Demo Order Validator',
-    version: '2.0.1',
-    capabilities: ['cap-compute-v1', 'cap-agent-recurse'],
-    allowedActions: ['validate_order', 'check_invariants'],
-    memoryCeilingBytes: 16 * 1024 * 1024,
-    timeoutCeilingMs: 1500,
-    schemaVersion: '1.0.0',
-    author: 'COMPUTLESS repo (built-in demo package)',
-  };
-  const orderDataTables = {
-    maxOrderValue: 1000000,
-    forbiddenCurrencies: ['UNBACKED_FIAT_LEGACY'],
-    allowedStatuses: ['PENDING', 'AUTHORIZED', 'COMPLETED', 'CANCELLED'],
-  };
-  const orderHandlers = {
-    validate_order: `
-      const order = input.order || {};
-      const amount = Number(order.amount || 0);
-      const currency = String(order.currency || 'VEK');
-      const isValid = amount > 0 && amount <= dataTables.maxOrderValue && !dataTables.forbiddenCurrencies.includes(currency);
-      output.orderId = order.id || 'ord-unknown';
-      output.valid = isValid;
-      output.checks = {
-        positiveAmount: amount > 0,
-        withinCap: amount <= dataTables.maxOrderValue,
-        allowedCurrency: !dataTables.forbiddenCurrencies.includes(currency)
-      };
-      console.log("Validated order " + output.orderId + " -> " + (isValid ? "PASS" : "FAIL"));
-    `,
-    check_invariants: `
-      output.checkedByValidateOrder = ['POSITIVE_AMOUNT', 'WITHIN_MAX_ORDER_VALUE', 'ALLOWED_CURRENCY'];
-      output.status = 'LISTED';
-    `,
-  };
-  const orderDigest = computeVkgDigest(orderManifestRaw, orderDataTables, orderHandlers);
-  const orderPkg: VkgPackage = {
-    manifest: { ...orderManifestRaw, contentDigest: orderDigest },
-    dataTables: orderDataTables,
-    actionHandlers: orderHandlers,
-    isImmutable: false,
-    installedAt: new Date().toISOString(),
-    evidenceLabel: 'DEMO',
-  };
+  const order = builtIn(
+    {
+      packageId: 'vkg-order-validator-v1',
+      name: 'Order Validator',
+      version: '2.1.0',
+      capabilities: ['computless.vkg.execute'],
+      allowedActions: ['validate_order', 'check_invariants'],
+      memoryCeilingBytes: 16 * MIB,
+      timeoutCeilingMs: 1500,
+      schemaVersion: '1.0.0',
+      author: 'COMPUTLESS repository (built-in package)',
+    },
+    {
+      maxOrderValue: 1000000,
+      currencyPattern: '^[A-Z]{3}$',
+    },
+    {
+      validate_order: `
+        const order = input.order || {};
+        const amount = Number(order.amount);
+        const currency = String(order.currency || '');
+        const checks = {
+          positiveAmount: Number.isFinite(amount) && amount > 0,
+          withinMaxOrderValue: Number.isFinite(amount) && amount <= dataTables.maxOrderValue,
+          currencyCodeFormat: new RegExp(dataTables.currencyPattern).test(currency),
+        };
+        output.orderId = order.id === undefined ? null : order.id;
+        output.checks = checks;
+        output.valid = Object.values(checks).every(Boolean);
+        console.log('order ' + output.orderId + ': ' + (output.valid ? 'PASS' : 'FAIL'));
+      `,
+      check_invariants: `
+        output.checks = ['positiveAmount', 'withinMaxOrderValue', 'currencyCodeFormat'];
+        output.maxOrderValue = dataTables.maxOrderValue;
+        output.currencyPattern = dataTables.currencyPattern;
+      `,
+    }
+  );
 
-  return [taxPkg, orderPkg];
+  return [vat, order];
 }
 
 /**
- * Evidence label for a package digest check computed now: VERIFIED_REPO only
- * when the digest matches AND equals the digest of the repo's built-in package
- * with the same id; otherwise UNVERIFIED (self-consistent at best).
+ * Digest check computed now. VERIFIED_REPO only when the digest matches AND
+ * equals the digest of the built-in package with the same id shipped in this
+ * repo; otherwise UNVERIFIED (self-consistent at best).
  */
-export function vkgDigestEvidence(pkg: VkgPackage): { digestValid: boolean; evidenceLabel: 'VERIFIED_REPO' | 'UNVERIFIED'; computedDigest: string } {
+export function vkgDigestEvidence(pkg: VkgPackage): {
+  digestValid: boolean;
+  evidenceLabel: 'VERIFIED_REPO' | 'UNVERIFIED';
+  computedDigest: string;
+  expectedDigest: string;
+  error?: string;
+} {
   const v = validateVkgPackage(pkg);
-  const builtin = createDefaultVkgPackages().find((p) => p.manifest.packageId === pkg?.manifest?.packageId);
-  const matchesRepo = Boolean(v.valid && builtin && builtin.manifest.contentDigest === v.computedDigest);
-  return { digestValid: v.valid, evidenceLabel: matchesRepo ? 'VERIFIED_REPO' : 'UNVERIFIED', computedDigest: v.computedDigest };
+  const repo = createDefaultVkgPackages().find((p) => p.manifest.packageId === pkg?.manifest?.packageId);
+  const matchesRepo = Boolean(v.valid && repo && repo.manifest.contentDigest === v.computedDigest);
+  return {
+    digestValid: v.valid,
+    evidenceLabel: matchesRepo ? 'VERIFIED_REPO' : 'UNVERIFIED',
+    computedDigest: v.computedDigest,
+    expectedDigest: v.expectedDigest,
+    ...(v.error ? { error: v.error } : {}),
+  };
 }

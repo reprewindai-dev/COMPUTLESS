@@ -7,50 +7,57 @@ import test from 'node:test';
 // dbStore resolves data/ from process.cwd() at import time, so run it in a temp dir.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'computless-db-'));
 fs.mkdirSync(path.join(dir, 'data'));
+const dbFile = path.join(dir, 'data', 'substrate_db.json');
 fs.writeFileSync(
-  path.join(dir, 'data', 'substrate_db.json'),
+  dbFile,
   JSON.stringify({
-    // Legacy file: no schemaVersion, fabricated proof records.
-    actionEvidenceRecords: [{ id: 'ev-pgl-root-genesis', enclaveHardwareProof: 'enclave_tpm2_attestation_genesis_root', verifiable: true }],
-    confirmationCertificates: [{ certificateId: 'aecc-genesis-0001', overallConfirmationStatus: 'FULLY_CONFIRMED' }],
-    fpiSettlements: [{ id: 'fpi-stl-2026-08', payoutStatus: 'settled', payoutTxHash: '0x3a4b' }],
+    // Legacy (schema 2) file full of seeded demo records.
+    schemaVersion: 2,
+    substrateNodes: [{ id: 'node-demo-1', name: 'Demo Node', evidenceLabel: 'DEMO' }],
+    fpiProviders: [{ id: 'fpi-demo', name: 'Demo Provider', endpoint: 'https://provider.example.invalid' }],
+    vkgPackages: [{ manifest: { packageId: 'vkg-seeded' } }],
   })
 );
 process.chdir(dir);
 const { dbStore, DB_SCHEMA_VERSION } = await import('../../src/server/dbStore.js');
+const { computeVkgDigest, createDefaultVkgPackages } = await import('../../src/server/vkgEngine.js');
 
-test('a legacy DB file is discarded instead of resurrecting fabricated records', () => {
-  assert.equal(dbStore.getActionEvidenceRecords().length, 0);
-  assert.equal(dbStore.getConfirmationCertificates().length, 0);
-  assert.equal(dbStore.getFPISettlements().length, 0);
-  const persistence = dbStore.getPersistenceStatus();
-  assert.equal(persistence.loadedFrom, 'seeds-after-legacy-reset');
-  assert.equal(persistence.lastSaveOk, true);
-  const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'substrate_db.json'), 'utf8'));
-  assert.equal(onDisk.schemaVersion, DB_SCHEMA_VERSION);
+test('a legacy DB file is discarded and overwritten instead of resurrecting seeded records', () => {
+  assert.equal(dbStore.getLoadedFrom(), 'empty-after-legacy-reset');
+  const onDisk = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+  assert.deepEqual(onDisk, { schemaVersion: DB_SCHEMA_VERSION, uploadedVkgPackages: [] });
+  assert.ok(DB_SCHEMA_VERSION > 2);
 });
 
-test('seeds are DEMO and carry no fabricated metrics or online status', () => {
-  for (const n of dbStore.getSubstrateNodes()) {
-    assert.equal(n.evidenceLabel, 'DEMO');
-    assert.equal(n.status, 'unverified');
-    assert.equal(n.cpuUsagePct, null);
-  }
-  for (const p of dbStore.getFPIProviders()) {
-    assert.equal(p.status, 'unverified');
-    assert.equal(p.slaUptimePct, null);
-    assert.equal(p.lastHeartbeatAt, null);
-    assert.match(p.endpointUrl, /\.example\.invalid\//);
-  }
-  const m = dbStore.getAmplificationMetrics();
-  assert.equal(m.systemEntropyPct, null);
+test('only the built-in packages exist until a user uploads one', () => {
+  const pkgs = dbStore.getVkgPackages();
+  assert.deepEqual(
+    pkgs.map((p) => p.manifest.packageId),
+    createDefaultVkgPackages().map((p) => p.manifest.packageId)
+  );
+  assert.ok(pkgs.every((p) => p.source === 'built-in'));
 });
 
-test('statuses are derived from time', () => {
-  const alloc = dbStore.getFPIAllocations()[0];
-  alloc.expiresAt = new Date(Date.now() - 1000).toISOString();
-  assert.equal(dbStore.getFPIAllocations()[0].status, 'expired');
-  const grant = dbStore.getCappoGrants()[0];
-  grant.expiresAt = Date.now() - 1000;
-  assert.equal(dbStore.getCappoGrants()[0].status, 'expired');
+test('an uploaded package is persisted as user data; built-in ids are reserved', () => {
+  const manifest = {
+    packageId: 'vkg-user-upload',
+    name: 'User upload',
+    version: '1.0.0',
+    capabilities: ['computless.vkg.execute'],
+    allowedActions: ['double'],
+    memoryCeilingBytes: 16 * 1024 * 1024,
+    timeoutCeilingMs: 1000,
+    schemaVersion: '1.0.0',
+  };
+  const actionHandlers = { double: 'output.v = input.n * 2;' };
+  const pkg = { manifest: { ...manifest, contentDigest: computeVkgDigest(manifest, {}, actionHandlers) }, dataTables: {}, actionHandlers };
+  const stored = dbStore.addUploadedVkgPackage(pkg);
+  assert.equal(stored.source, 'uploaded');
+  assert.ok(stored.uploadedAt);
+  const onDisk = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+  assert.equal(onDisk.uploadedVkgPackages[0].manifest.packageId, 'vkg-user-upload');
+  assert.equal(dbStore.getVkgPackage('vkg-user-upload')?.source, 'uploaded');
+
+  const builtin = createDefaultVkgPackages()[0];
+  assert.throws(() => dbStore.addUploadedVkgPackage(builtin), /built-in/);
 });
