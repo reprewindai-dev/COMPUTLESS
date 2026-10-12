@@ -31,6 +31,8 @@ import {
   SubstrateLayerSpec,
 } from '../types';
 import { SUBSTRATE_8_LAYER_SPEC } from '../data/mockData';
+import { EvidenceBadge, measured } from './EvidenceBadge';
+import { DirectiveControl, GovernanceBlock, postExecute, problemSummary } from './Governance';
 
 interface Substrate8LayerPipelineExplorerProps {
   capabilities: CapabilityDefinition[];
@@ -42,28 +44,35 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
   cappoGrants,
 }) => {
   const [activeView, setActiveView] = useState<'pipeline_tester' | 'architecture_specs'>('pipeline_tester');
-  const [selectedCapability, setSelectedCapability] = useState<string>('cap-compute-v1');
+  const [selectedCapability, setSelectedCapability] = useState<string>('');
   const [selectedSubject, setSelectedSubject] = useState<string>('agent:veklom-root-001');
-  const [selectedGrantId, setSelectedGrantId] = useState<string>('cappo-grant-alpha-001');
+  const [selectedGrantId, setSelectedGrantId] = useState<string>('');
   const [selectedRuntime, setSelectedRuntime] = useState<'node_vm' | 'docker_isolated' | 'e2b_cloud_cell'>('node_vm');
   const [simulateFault, setSimulateFault] = useState<'NONE' | 'INVALID_CAPPO' | 'EXPIRED_GRANT' | 'NODE_OUTAGE_503'>('NONE');
   const [payloadJson, setPayloadJson] = useState<string>(
     '{\n  "action": "matrix_multiply",\n  "matrixSize": 64,\n  "iterations": 150,\n  "workloadPriority": "high"\n}'
   );
   const [codeSnippet, setCodeSnippet] = useState<string>(
-    '// COMPUTLESS Substrate 8-Layer Bounded VM Execution\nconst input = context.inputPayload || {};\nconst iterations = input.iterations || 100;\nlet result = 0;\nfor(let i = 0; i < iterations; i++) {\n  result += Math.sqrt(i * 2.5);\n}\noutput.computedScore = Math.round(result * 100) / 100;\noutput.targetNode = context.targetNode;\noutput.status = "VERIFIED_COMPUTLESS_EXECUTION";\nconsole.log("Substrate V8 workload finished. Score=" + output.computedScore);'
+    '// Runs in the COMPUTLESS child-process sandbox.\n// `input` is your JSON payload (also available as context.inputPayload).\n// Write results to `output`.\nconst iterations = (input && input.iterations) || 100;\nlet result = 0;\nfor (let i = 0; i < iterations; i++) {\n  result += Math.sqrt(i * 2.5);\n}\noutput.computedScore = Math.round(result * 100) / 100;\nconsole.log("workload finished, score=" + output.computedScore);'
   );
 
   const [executing, setExecuting] = useState<boolean>(false);
   const [pipelineResult, setPipelineResult] = useState<Substrate8LayerPipelineResult | null>(null);
+  const [execMeta, setExecMeta] = useState<{ status: number; problem: boolean; data: any } | null>(null);
+  const [execError, setExecError] = useState<string | null>(null);
+  const capabilityId = selectedCapability || capabilities[0]?.id || 'cap-compute-v1';
+  const grantId = selectedGrantId || cappoGrants[0]?.grantId || '';
+  const specLayers: SubstrateLayerSpec[] = Array.isArray(SUBSTRATE_8_LAYER_SPEC?.layers) ? SUBSTRATE_8_LAYER_SPEC.layers : [];
   const [expandedLayer, setExpandedLayer] = useState<number | null>(null);
-  const [selectedSpecLayer, setSelectedSpecLayer] = useState<SubstrateLayerSpec>(SUBSTRATE_8_LAYER_SPEC.layers[0]);
+  const [selectedSpecLayer, setSelectedSpecLayer] = useState<SubstrateLayerSpec | undefined>(SUBSTRATE_8_LAYER_SPEC?.layers?.[0]);
 
   // Execute pipeline
   const handleExecutePipeline = async () => {
     try {
       setExecuting(true);
       setPipelineResult(null);
+      setExecMeta(null);
+      setExecError(null);
 
       let parsedPayload = {};
       try {
@@ -72,22 +81,24 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
         parsedPayload = { raw: payloadJson };
       }
 
-      const res = await fetch('/api/substrate/pipeline/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          capabilityId: selectedCapability,
-          subject: selectedSubject,
-          cappoGrantId: selectedGrantId,
-          payload: parsedPayload,
-          routingPolicy: { requireSovereignty: false, maxLatencyMs: 120, priority: 'speed' },
-          runtimeTarget: selectedRuntime,
-          codeSnippet,
-          simulateFault,
-        }),
+      const r = await postExecute('/api/substrate/pipeline/execute', {
+        capabilityId,
+        subject: selectedSubject,
+        cappoGrantId: grantId,
+        payload: parsedPayload,
+        inputPayload: parsedPayload,
+        routingPolicy: { requireSovereignty: false, maxLatencyMs: 120, priority: 'speed' },
+        runtimeTarget: selectedRuntime,
+        codeSnippet,
+        code: codeSnippet,
+        simulateFault,
       });
-
-      const data = await res.json();
+      setExecMeta({ status: r.status, problem: r.problem, data: r.data });
+      const data = r.data;
+      if (!data || typeof data !== 'object' || !data.layers || typeof data.layers !== 'object') {
+        if (!r.problem) setExecError(problemSummary(r));
+        return;
+      }
       setPipelineResult(data);
       if (data.overallStatus === 'BLOCKED_403') {
         setExpandedLayer(2);
@@ -96,8 +107,8 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
       } else {
         setExpandedLayer(1);
       }
-    } catch (err) {
-      console.error('Pipeline execution failed:', err);
+    } catch (err: any) {
+      setExecError(err?.message ? String(err.message) : 'request failed');
     } finally {
       setExecuting(false);
     }
@@ -124,17 +135,17 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
             <div className="flex items-center space-x-3 mb-2">
               <span className="px-2.5 py-1 text-xs font-mono font-semibold rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center space-x-1.5">
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>COMPUTLESS CLOUD Substrate Architecture</span>
+                <span>COMPUTLESS substrate prototype</span>
               </span>
-              <span className="px-2.5 py-1 text-xs font-mono font-semibold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                8 Canonical Layers Formalized
-              </span>
+              <EvidenceBadge label="TARGET" title="The 8-layer architecture is a target design; only parts are implemented" />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight">
-              Decentralized Substrate Architecture &amp; Pipeline Engine
+              8-layer pipeline (prototype)
             </h1>
             <p className="text-sm text-slate-300 max-w-3xl mt-1">
-              End-to-end formalization spanning Capability, Authority, Federation, Routing, Execution, Evidence, Measurement, and Settlement.
+              One request walks Capability, Authority, Federation, Routing, Execution, Evidence, Measurement and Settlement. Execution
+              really runs your script in the child-process sandbox (after CAPPO approval in governed mode). Federation and routing use
+              local node records; evidence is a local record; settlement is not implemented.
             </p>
           </div>
 
@@ -148,7 +159,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
               }`}
             >
               <Play className="h-4 w-4" />
-              <span>Interactive Pipeline Tester</span>
+              <span>Pipeline tester</span>
             </button>
             <button
               onClick={() => setActiveView('architecture_specs')}
@@ -159,14 +170,14 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
               }`}
             >
               <BookOpen className="h-4 w-4" />
-              <span>8-Layer Specifications</span>
+              <span>Layer specs (target)</span>
             </button>
           </div>
         </div>
 
         {/* 8-Layer Micro-Bar */}
         <div className="mt-6 pt-4 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 text-center text-xs font-mono">
-          {SUBSTRATE_8_LAYER_SPEC.layers.map((l) => (
+          {specLayers.map((l) => (
             <div
               key={l.layerNumber}
               onClick={() => {
@@ -194,14 +205,14 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                   <Play className="h-4 w-4 text-sky-400" />
                   <span>Pipeline Dispatch Parameters</span>
                 </h2>
-                <span className="text-[11px] text-slate-400">8 Layers Deterministic</span>
+                <span className="text-[11px] text-slate-400">POST /api/substrate/pipeline/execute</span>
               </div>
 
               {/* Capability */}
               <div>
                 <label className="text-slate-400 block mb-1">Layer 1: Target Capability</label>
                 <select
-                  value={selectedCapability}
+                  value={capabilityId}
                   onChange={(e) => setSelectedCapability(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:border-indigo-500"
                 >
@@ -225,9 +236,9 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                   />
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">CAPPO Grant ID</label>
+                  <label className="text-slate-400 block mb-1">Local grant id (not CAPPO)</label>
                   <select
-                    value={selectedGrantId}
+                    value={grantId}
                     onChange={(e) => setSelectedGrantId(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:border-indigo-500"
                   >
@@ -243,15 +254,15 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
               {/* Runtime Containment & Fault Simulation */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-slate-400 block mb-1">Layer 5: Runtime Target</label>
+                  <label className="text-slate-400 block mb-1">Layer 5: Runtime</label>
                   <select
                     value={selectedRuntime}
                     onChange={(e) => setSelectedRuntime(e.target.value as any)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:border-indigo-500"
                   >
-                    <option value="node_vm">Node V8 Isolated VM</option>
-                    <option value="docker_isolated">Docker Enclave Cell</option>
-                    <option value="e2b_cloud_cell">E2B Bounded Cell</option>
+                    <option value="node_vm">Node child-process sandbox</option>
+                    <option value="docker_isolated" disabled>Container runtime — TARGET (not implemented)</option>
+                    <option value="e2b_cloud_cell" disabled>Remote cloud sandbox — TARGET (not implemented)</option>
                   </select>
                 </div>
                 <div>
@@ -282,7 +293,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
 
               {/* Code Snippet */}
               <div>
-                <label className="text-slate-400 block mb-1">Isolated Workload Script:</label>
+                <label className="text-slate-400 block mb-1">Workload script (child-process sandbox; network not restricted):</label>
                 <textarea
                   value={codeSnippet}
                   onChange={(e) => setCodeSnippet(e.target.value)}
@@ -291,13 +302,17 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                 />
               </div>
 
+              <div className="pt-2 border-t border-slate-800">
+                <DirectiveControl />
+              </div>
+
               <button
                 onClick={handleExecutePipeline}
                 disabled={executing}
                 className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center justify-center space-x-2 shadow-lg shadow-indigo-600/30 disabled:opacity-50"
               >
                 <Play className={`h-4 w-4 ${executing ? 'animate-spin' : ''}`} />
-                <span>{executing ? 'Traversing 8 Substrate Layers...' : 'Execute End-to-End 8-Layer Pipeline'}</span>
+                <span>{executing ? 'Running pipeline...' : 'Run 8-layer pipeline'}</span>
               </button>
             </div>
           </div>
@@ -309,7 +324,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
                   <div className="flex items-center space-x-2">
                     <Layers className="h-5 w-5 text-indigo-400" />
-                    <h2 className="text-sm font-bold text-white">8-Layer Deterministic Trace Pipeline</h2>
+                    <h2 className="text-sm font-bold text-white">Pipeline trace</h2>
                   </div>
                   {pipelineResult && (
                     <div className="flex items-center space-x-2 font-mono text-xs">
@@ -324,15 +339,30 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                       >
                         {pipelineResult.overallStatus} (HTTP {pipelineResult.httpStatus})
                       </span>
-                      <span className="text-slate-400">Total: {pipelineResult.totalDurationMs}ms</span>
+                      <span className="text-slate-400">Total: {measured((pipelineResult as any).totalDurationMs, ' ms')}</span>
                     </div>
                   )}
                 </div>
 
+                {execError && (
+                  <div className="mb-3 p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">
+                    Pipeline request failed: {execError}
+                  </div>
+                )}
+                {execMeta && (execMeta.data?.governance || execMeta.problem) && (
+                  <div className="mb-4">
+                    <GovernanceBlock
+                      governance={execMeta.data?.governance}
+                      status={execMeta.status}
+                      problem={execMeta.problem ? execMeta.data : null}
+                    />
+                  </div>
+                )}
                 {pipelineResult ? (
                   <div className="space-y-3 font-mono text-xs">
                     {/* Render each of the 8 layers */}
-                    {Object.entries(pipelineResult.layers).map(([layerKey, layerStep]: [string, any]) => {
+                    {Object.entries(pipelineResult.layers ?? {}).map(([layerKey, layerStep]: [string, any]) => {
+                      if (!layerStep || typeof layerStep !== 'object') return null;
                       const iconConfig = layerIcons.find((i) => i.num === layerStep.layerNumber) || layerIcons[0];
                       const Icon = iconConfig.icon;
                       const isExpanded = expandedLayer === layerStep.layerNumber;
@@ -345,7 +375,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                               ? 'bg-slate-950/80 border-slate-800'
                               : layerStep.status === 'FALLBACK_503'
                               ? 'bg-sky-950/30 border-sky-500/40'
-                              : layerStep.status === 'BLOCKED_403'
+                              : layerStep.status === 'BLOCKED_403' || layerStep.status === 'ERROR' || layerStep.status === 'EXECUTION_FAILED'
                               ? 'bg-rose-950/30 border-rose-500/40'
                               : 'bg-slate-950/40 border-slate-800/60 opacity-60'
                           }`}
@@ -376,14 +406,15 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                                     ? 'bg-emerald-500/20 text-emerald-300'
                                     : layerStep.status === 'FALLBACK_503'
                                     ? 'bg-sky-500/20 text-sky-300'
-                                    : layerStep.status === 'BLOCKED_403'
+                                    : layerStep.status === 'BLOCKED_403' || layerStep.status === 'ERROR' || layerStep.status === 'EXECUTION_FAILED'
                                     ? 'bg-rose-500/20 text-rose-300'
-                                    : 'bg-slate-800 text-slate-500'
+                                    : 'bg-slate-800 text-slate-400'
                                 }`}
                               >
                                 {layerStep.status}
                               </span>
-                              <span className="text-[11px] text-slate-400">{layerStep.durationMs}ms</span>
+                              {layerStep.evidenceLabel && <EvidenceBadge label={layerStep.evidenceLabel} />}
+                              <span className="text-[11px] text-slate-400">{measured(layerStep.durationMs, ' ms')}</span>
                               {isExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
                             </div>
                           </div>
@@ -394,8 +425,8 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                               {/* Specialized visualization for Layer 6: Evidence */}
                               {layerStep.layerNumber === 6 && layerStep.data && (
                                 <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-2 text-xs font-mono">
-                                  <div className="flex items-center justify-between text-emerald-400 font-bold">
-                                    <span>🔐 Immutable Cryptographic Proof Seal</span>
+                                  <div className="flex items-center justify-between text-slate-200 font-bold">
+                                    <span>Local evidence record (not canonical PGL)</span>
                                     <span>Block #{layerStep.data.blockHeight ?? 1}</span>
                                   </div>
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] text-slate-300">
@@ -408,7 +439,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                                       <span className="text-slate-400 break-all">{layerStep.data.parentBlockHash}</span>
                                     </div>
                                     <div className="md:col-span-2">
-                                      <span className="text-[10px] text-slate-500 block">HMAC-SHA256 SIGNATURE:</span>
+                                      <span className="text-[10px] text-slate-500 block">HMAC-SHA256 SIGNATURE (local key):</span>
                                       <span className="text-amber-300 break-all">{layerStep.data.pglSignature}</span>
                                     </div>
                                   </div>
@@ -419,21 +450,26 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                               {layerStep.layerNumber === 7 && layerStep.data && (
                                 <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-2 text-xs font-mono">
                                   <div className="flex items-center justify-between text-sky-400 font-bold">
-                                    <span>📊 5-Point Confirmation Certificate</span>
-                                    <span className="text-emerald-400">Score: {layerStep.data.confirmationScorePct}%</span>
+                                    <span>Local measurement certificate (self-assessed)</span>
+                                    <span className="text-slate-200">Score: {measured(layerStep.data.confirmationScorePct, '%')}</span>
                                   </div>
                                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
                                     <div className="p-2 bg-slate-950 rounded border border-slate-800">
                                       <span className="text-[10px] text-slate-500 block">SCHEMA CONFORMANCE:</span>
-                                      <span className="text-emerald-400 font-bold">{layerStep.data.dimensions?.schemaConformance?.status || 'PASS'}</span>
+                                      <span className="text-slate-200 font-bold">{layerStep.data.dimensions?.schemaConformance?.status ?? 'not reported'}</span>
                                     </div>
                                     <div className="p-2 bg-slate-950 rounded border border-slate-800">
-                                      <span className="text-[10px] text-slate-500 block">SLA LATENCY:</span>
-                                      <span className="text-sky-300 font-bold">{layerStep.data.dimensions?.slaLatency?.actualWallClockLatencyMs}ms / Max {layerStep.data.dimensions?.slaLatency?.targetMaxLatencyMs}ms</span>
+                                      <span className="text-[10px] text-slate-500 block">LATENCY VS BUDGET:</span>
+                                      <span className="text-sky-300 font-bold">
+                                        {measured(layerStep.data.dimensions?.slaLatency?.actualWallClockLatencyMs, ' ms')} / budget{' '}
+                                        {measured(layerStep.data.dimensions?.slaLatency?.budgetedMaxLatencyMs ?? layerStep.data.dimensions?.slaLatency?.targetMaxLatencyMs, ' ms')}
+                                      </span>
                                     </div>
                                     <div className="p-2 bg-slate-950 rounded border border-slate-800">
                                       <span className="text-[10px] text-slate-500 block">RUNTIME EXIT CODE:</span>
-                                      <span className="text-emerald-400 font-bold">{layerStep.data.dimensions?.runtimeStatus?.exitCode || '0 (SUCCESS)'}</span>
+                                      <span className="text-slate-200 font-bold">
+                                        {layerStep.data.dimensions?.runtimeExit?.exitCode ?? layerStep.data.dimensions?.runtimeStatus?.exitCode ?? 'not reported'}
+                                      </span>
                                     </div>
                                   </div>
                                 </div>
@@ -456,9 +492,10 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                 ) : (
                   <div className="p-12 text-center text-slate-500 font-mono text-xs flex flex-col items-center justify-center space-y-3">
                     <Layers className="h-10 w-10 text-slate-600" />
-                    <p className="text-slate-300 font-semibold">Ready to execute 8-layer substrate pipeline.</p>
+                    <p className="text-slate-300 font-semibold">No pipeline run yet.</p>
                     <p className="text-slate-500 max-w-md">
-                      Configure your capability and execution options on the left, then click &quot;Execute End-to-End 8-Layer Pipeline&quot; to inspect every layer in real time.
+                      Configure the request on the left and run it. The result shows each layer and the governance block (CAPPO decision,
+                      Gnomledger event) reported by the server.
                     </p>
                   </div>
                 )}
@@ -473,10 +510,10 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Layer List */}
           <div className="lg:col-span-4 space-y-2">
-            {SUBSTRATE_8_LAYER_SPEC.layers.map((layer) => {
+            {specLayers.map((layer) => {
               const iconConfig = layerIcons.find((i) => i.num === layer.layerNumber) || layerIcons[0];
               const Icon = iconConfig.icon;
-              const isSelected = selectedSpecLayer.layerNumber === layer.layerNumber;
+              const isSelected = selectedSpecLayer?.layerNumber === layer.layerNumber;
 
               return (
                 <div
@@ -507,6 +544,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
           </div>
 
           {/* Detailed Specification Card */}
+          {selectedSpecLayer && (
           <div className="lg:col-span-8">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 font-mono space-y-6">
               <div className="flex items-center justify-between pb-4 border-b border-slate-800">
@@ -516,6 +554,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
                       Layer #{selectedSpecLayer.layerNumber}
                     </span>
                     <span className="text-xs text-slate-400">Protocol: {selectedSpecLayer.protocolStandard}</span>
+                    <EvidenceBadge label={(selectedSpecLayer as any).evidenceLabel ?? (SUBSTRATE_8_LAYER_SPEC as any)?.evidenceLabel} fallback="TARGET" />
                   </div>
                   <h2 className="text-xl font-bold text-white">{selectedSpecLayer.name}</h2>
                 </div>
@@ -542,11 +581,11 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
 
               {/* Invariants & Guarantees */}
               <div>
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Invariants &amp; Cryptographic Guarantees</h3>
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Target invariants (design, not guarantees)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {selectedSpecLayer.invariants.map((inv, idx) => (
-                    <div key={idx} className="p-3 rounded-lg bg-slate-950 border border-emerald-500/20 flex items-start space-x-2">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
+                  {(selectedSpecLayer.invariants ?? []).map((inv, idx) => (
+                    <div key={idx} className="p-3 rounded-lg bg-slate-950 border border-violet-500/20 flex items-start space-x-2">
+                      <ArrowRight className="h-4 w-4 text-violet-300 shrink-0 mt-0.5" />
                       <span className="text-xs text-slate-300">{inv}</span>
                     </div>
                   ))}
@@ -557,7 +596,7 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
               <div>
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Core TypeScript Data Structures</h3>
                 <div className="flex flex-wrap gap-2">
-                  {selectedSpecLayer.dataStructures.map((ds, idx) => (
+                  {(selectedSpecLayer.dataStructures ?? []).map((ds, idx) => (
                     <span key={idx} className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-indigo-300 font-bold">
                       {ds}
                     </span>
@@ -567,13 +606,14 @@ export const Substrate8LayerPipelineExplorer: React.FC<Substrate8LayerPipelineEx
 
               {/* Specifications Document Notice */}
               <div className="pt-4 border-t border-slate-800 flex items-center justify-between text-xs">
-                <span className="text-slate-400">Full markdown specifications saved in repository:</span>
+                <span className="text-slate-400">Full (target) specification in the repository:</span>
                 <span className="px-2.5 py-1 rounded bg-slate-950 text-slate-300 border border-slate-800">
                   COMPUTLESS_SUBSTRATE_SPEC.md
                 </span>
               </div>
             </div>
           </div>
+          )}
         </div>
       )}
     </div>

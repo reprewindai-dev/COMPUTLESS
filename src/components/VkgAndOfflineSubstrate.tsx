@@ -32,6 +32,10 @@ import {
   CanonicalExecutionAuthority,
   RuntimeAdapterType,
 } from '../types';
+import { EvidenceBadge, RecordBadge, measured, hasNumber } from './EvidenceBadge';
+import { DirectiveControl, GovernanceBlock, postExecute, problemSummary } from './Governance';
+
+type ExecMeta = { status: number; problem: boolean; data: any } | null;
 
 interface AdversarialTestResult {
   testId: string;
@@ -65,44 +69,48 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
   const [activeSubTab, setActiveSubTab] = useState<'adapters' | 'vkg' | 'offline' | 'adversarial'>('adapters');
 
   // Runtime Adapters State
-  const [availableAdapters, setAvailableAdapters] = useState<RuntimeAdapterInfo[]>([
+  // All four adapters run code in the same Node child-process sandbox (src/server/sandbox.ts).
+  const [availableAdapters] = useState<RuntimeAdapterInfo[]>([
     {
       type: RuntimeAdapterType.NodeVmRuntimeAdapter,
-      isolationLevel: 'PROCESS_ISOLATION',
-      description: 'In-process Node.js V8 execution context for rapid single-tenant scripting and testing.',
+      isolationLevel: 'CHILD_PROCESS',
+      description: 'Runs the script in a Node child process: empty env, no filesystem or child processes (Node permission model), heap cap, wall-clock kill. Network not restricted.',
       hardwareAttested: false,
       cgroupEnforced: false,
     },
     {
       type: RuntimeAdapterType.ContainerRuntimeAdapter,
-      isolationLevel: 'CONTAINMENT_SANDBOX',
-      description: 'Cgroup v2 memory/CPU-bounded container sandbox with network namespace egress blocking.',
+      isolationLevel: 'CHILD_PROCESS',
+      description: 'Container isolation is TARGET. Today this adapter uses the same child-process sandbox; no container is started.',
       hardwareAttested: false,
-      cgroupEnforced: true,
+      cgroupEnforced: false,
     },
     {
       type: RuntimeAdapterType.VkgRuntimeAdapter,
-      isolationLevel: 'CONTAINMENT_SANDBOX',
-      description: 'Deterministic execution engine for immutable .vkg packages with cryptographic digest validation.',
+      isolationLevel: 'CHILD_PROCESS',
+      description: 'Runs a .vkg package action after re-checking the package content digest, in the same child-process sandbox.',
       hardwareAttested: false,
-      cgroupEnforced: true,
+      cgroupEnforced: false,
     },
     {
       type: RuntimeAdapterType.OfflineRuntimeAdapter,
-      isolationLevel: 'PROCESS_ISOLATION',
-      description: 'Bounded offline lease execution adapter with monotonic nonce progression and local journal auditing.',
+      isolationLevel: 'CHILD_PROCESS',
+      description: 'Runs under a local offline lease (execution quota + nonce counter), in the same child-process sandbox.',
       hardwareAttested: false,
       cgroupEnforced: false,
     },
   ]);
-  const [selectedAdapterType, setSelectedAdapterType] = useState<RuntimeAdapterType>(RuntimeAdapterType.ContainerRuntimeAdapter);
+  const [selectedAdapterType, setSelectedAdapterType] = useState<RuntimeAdapterType>(RuntimeAdapterType.NodeVmRuntimeAdapter);
   const [adapterCodeInput, setAdapterCodeInput] = useState<string>(
-    '// Interchangeable Adapter Script\nconst input = context.inputPayload || {};\noutput.processedTimestamp = Date.now();\noutput.executionAdapterUsed = "' +
-      RuntimeAdapterType.ContainerRuntimeAdapter +
-      '";\noutput.computedValue = (input.value || 10) * 42;\noutput.status = "SUCCESS";'
+    '// Runs in the COMPUTLESS child-process sandbox.\n// `input` is your JSON payload; write results to `output`.\noutput.processedTimestamp = Date.now();\noutput.computedValue = ((input && input.value) || 10) * 42;'
   );
   const [adapterInputJson, setAdapterInputJson] = useState<string>('{\n  "value": 25,\n  "tenantId": "org-sovereign-01"\n}');
   const [adapterExecResult, setAdapterExecResult] = useState<RuntimeExecutionResult | null>(null);
+  const [adapterMeta, setAdapterMeta] = useState<ExecMeta>(null);
+  const [vkgMeta, setVkgMeta] = useState<ExecMeta>(null);
+  const [offlineMeta, setOfflineMeta] = useState<ExecMeta>(null);
+  const [execErrors, setExecErrors] = useState<Record<string, string | null>>({});
+  const [testError, setTestError] = useState<string | null>(null);
   const [isExecutingAdapter, setIsExecutingAdapter] = useState<boolean>(false);
 
   // .vkg Packages State
@@ -144,7 +152,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
         setPackages(data.packages || []);
         if (data.packages?.length > 0 && !selectedPackage) {
           setSelectedPackage(data.packages[0]);
-          setSelectedAction(data.packages[0].manifest.allowedActions[0] || '');
+          setSelectedAction(data.packages[0].manifest?.allowedActions?.[0] || '');
         }
       }
     } catch (err) {
@@ -177,14 +185,17 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
   const runAdversarialTests = async () => {
     setIsRunningTests(true);
+    setTestError(null);
     try {
       const res = await fetch('/api/tests/adversarial/run', { method: 'POST' });
       if (res.ok) {
         const report = await res.json();
-        setTestReport(report);
+        setTestReport(report && Array.isArray(report.tests) ? report : null);
+      } else {
+        setTestError(`HTTP ${res.status}`);
       }
-    } catch (err) {
-      console.error('Adversarial test run failed:', err);
+    } catch (err: any) {
+      setTestError(err?.message ? String(err.message) : 'request failed');
     } finally {
       setIsRunningTests(false);
     }
@@ -221,6 +232,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
     if (!selectedPackage || !selectedAction) return;
     setIsExecutingVkg(true);
     setVkgExecResult(null);
+    setVkgMeta(null);
 
     try {
       let parsedInput = {};
@@ -232,32 +244,17 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
         return;
       }
 
-      const authority: CanonicalExecutionAuthority = {
-        executionId: 'exec-ui-vkg-' + Date.now().toString().slice(-6),
-        workspaceId: 'ws-canonical-substrate-01',
-        mountId: 'mnt-' + selectedPackage.manifest.packageId,
-        capabilityId: selectedPackage.manifest.capabilities[0] || 'cap-compute-v1',
-        allowedAction: selectedAction,
-        expiresAt: Date.now() + 60000,
-        authorityDigest: '0x_ui_auth_' + Date.now(),
-        runtimeProfile: 'CONNECTED',
-      };
-
-      const res = await fetch('/api/vkg/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          packageId: selectedPackage.manifest.packageId,
-          action: selectedAction,
-          inputPayload: parsedInput,
-          authority,
-        }),
+      // No `authority` is sent: the server builds its own local scope token. Authority is CAPPO (governed mode).
+      const r = await postExecute('/api/vkg/execute', {
+        packageId: selectedPackage.manifest.packageId,
+        action: selectedAction,
+        inputPayload: parsedInput,
       });
-
-      const data = await res.json();
-      setVkgExecResult(data.execResult);
-    } catch (err) {
-      console.error('VKG Execution error:', err);
+      setVkgMeta({ status: r.status, problem: r.problem, data: r.data });
+      setVkgExecResult(r.data?.execResult ?? null);
+      setExecErrors((e) => ({ ...e, vkg: r.ok || r.data?.governance ? null : problemSummary(r) }));
+    } catch (err: any) {
+      setExecErrors((e) => ({ ...e, vkg: err?.message ? String(err.message) : 'request failed' }));
     } finally {
       setIsExecutingVkg(false);
     }
@@ -287,6 +284,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
     if (!selectedLease) return;
     setIsExecutingOffline(true);
     setOfflineExecResult(null);
+    setOfflineMeta(null);
 
     try {
       let parsedInput = {};
@@ -298,22 +296,18 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
         return;
       }
 
-      const res = await fetch('/api/offline/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          leaseId: selectedLease.leaseId,
-          action: offlineAction,
-          inputPayload: parsedInput,
-          vkgPackageId: 'vkg-sovereign-tax-calc-v1',
-        }),
+      const r = await postExecute('/api/offline/execute', {
+        leaseId: selectedLease.leaseId,
+        action: offlineAction,
+        inputPayload: parsedInput,
+        vkgPackageId: 'vkg-sovereign-tax-calc-v1',
       });
-
-      const data = await res.json();
-      setOfflineExecResult(data.execResult);
+      setOfflineMeta({ status: r.status, problem: r.problem, data: r.data });
+      setOfflineExecResult(r.data?.execResult ?? null);
+      setExecErrors((e) => ({ ...e, offline: r.ok || r.data?.governance ? null : problemSummary(r) }));
       await fetchOfflineData();
-    } catch (err) {
-      console.error('Offline execution error:', err);
+    } catch (err: any) {
+      setExecErrors((e) => ({ ...e, offline: err?.message ? String(err.message) : 'request failed' }));
     } finally {
       setIsExecutingOffline(false);
     }
@@ -322,6 +316,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
   const handleExecuteAdapter = async () => {
     setIsExecutingAdapter(true);
     setAdapterExecResult(null);
+    setAdapterMeta(null);
 
     try {
       let parsedInput = {};
@@ -333,32 +328,16 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
         return;
       }
 
-      const authority: CanonicalExecutionAuthority = {
-        executionId: 'exec-adapter-' + Date.now().toString().slice(-6),
-        workspaceId: 'ws-canonical-substrate-01',
-        mountId: 'mnt-adapter-01',
-        capabilityId: 'cap-compute-v1',
-        allowedAction: 'execute_workload',
-        expiresAt: Date.now() + 60000,
-        authorityDigest: '0x_adapter_auth_' + Date.now(),
-        runtimeProfile: 'CONNECTED',
-      };
-
-      const res = await fetch('/api/runtime/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          authority,
-          adapterType: selectedAdapterType,
-          inputPayload: parsedInput,
-          code: adapterCodeInput,
-        }),
+      const r = await postExecute('/api/runtime/execute', {
+        adapterType: selectedAdapterType,
+        inputPayload: parsedInput,
+        code: adapterCodeInput,
       });
-
-      const data = await res.json();
-      setAdapterExecResult(data.execResult);
-    } catch (err) {
-      console.error('Adapter Execution error:', err);
+      setAdapterMeta({ status: r.status, problem: r.problem, data: r.data });
+      setAdapterExecResult(r.data?.execResult ?? null);
+      setExecErrors((e) => ({ ...e, adapter: r.ok || r.data?.governance ? null : problemSummary(r) }));
+    } catch (err: any) {
+      setExecErrors((e) => ({ ...e, adapter: err?.message ? String(err.message) : 'request failed' }));
     } finally {
       setIsExecutingAdapter(false);
     }
@@ -383,7 +362,12 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
     }
   };
 
-  const filteredTests = testReport?.tests.filter((t) =>
+  const pendingObservations = observations.filter((o) => !o.reconciled).length;
+  const leaseExpired = (l: BoundedOfflineLease) => {
+    const t = new Date(l.expiresAt as any).getTime();
+    return Number.isFinite(t) && t < Date.now();
+  };
+  const filteredTests = testReport?.tests?.filter((t) =>
     selectedCategory === 'ALL' ? true : t.category === selectedCategory
   ) || [];
 
@@ -397,13 +381,11 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
           </div>
           <div>
             <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-              <span>COMPUTLESS Runtime Substrate</span>
-              <span className="px-2 py-0.5 text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-mono">
-                Pure Execution Adapter
-              </span>
+              <span>COMPUTLESS runtime substrate</span>
             </h2>
             <p className="text-xs text-slate-400">
-              Deterministic .vkg Packages • Bounded Offline Leases • Monotonic Reconciliations • 16/16 Adversarial Verification
+              Runtime adapters • .vkg packages • local offline leases • adversarial test suite. All code runs in one child-process
+              sandbox; execute requests go through the server's governance (see Veklom Fabric tab).
             </p>
           </div>
         </div>
@@ -430,7 +412,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
             }`}
           >
             <Binary className="h-3.5 w-3.5" />
-            <span>Deterministic .vkg Packages</span>
+            <span>.vkg Packages</span>
           </button>
 
           <button
@@ -442,7 +424,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
             }`}
           >
             <Clock className="h-3.5 w-3.5" />
-            <span>Bounded Offline Leases</span>
+            <span>Offline Leases (local)</span>
           </button>
 
           <button
@@ -454,9 +436,15 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
             }`}
           >
             <ShieldCheck className="h-3.5 w-3.5 text-rose-300" />
-            <span>Adversarial Matrix ({testReport?.passed || 18}/{testReport?.totalTests || 18})</span>
+            <span>
+              Adversarial Tests ({testReport ? `${testReport.passed ?? '?'}/${testReport.totalTests ?? '?'}` : isRunningTests ? 'running…' : 'not run'})
+            </span>
           </button>
         </div>
+      </div>
+
+      <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
+        <DirectiveControl compact />
       </div>
 
       {/* TAB 0: RUNTIME ADAPTERS BACKENDS */}
@@ -468,9 +456,9 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                   <Server className="h-4 w-4 text-indigo-400" />
-                  <span>Interchangeable Execution Backends</span>
+                  <span>Runtime adapters</span>
                 </h3>
-                <span className="text-xs text-slate-400 font-mono">{availableAdapters.length} Available</span>
+                <span className="text-xs text-slate-400 font-mono">{availableAdapters.length} adapters, 1 sandbox</span>
               </div>
 
               <div className="space-y-2">
@@ -496,13 +484,11 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
                     <div className="mt-3 flex items-center justify-between text-xs text-slate-400 font-mono pt-2 border-t border-slate-800/60">
                       <span className="px-2 py-0.5 text-[10px] bg-slate-800 text-slate-300 rounded">
-                        Isolation: <strong className="text-sky-400">{adapter.isolationLevel}</strong>
+                        Isolation: <strong className="text-slate-200">{adapter.isolationLevel}</strong>
                       </span>
-                      {adapter.cgroupEnforced && (
-                        <span className="px-2 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-semibold">
-                          cgroup v2
-                        </span>
-                      )}
+                      <span className="px-2 py-0.5 text-[10px] bg-slate-800 text-slate-400 rounded">
+                        cgroups: {adapter.cgroupEnforced ? 'yes' : 'no'} · network: not restricted
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -516,7 +502,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                   <Terminal className="h-4 w-4 text-emerald-400" />
-                  <span>Execute on Backend: {selectedAdapterType}</span>
+                  <span>Run with: {selectedAdapterType}</span>
                 </h3>
                 <button
                   onClick={handleExecuteAdapter}
@@ -524,13 +510,13 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5 shadow-md"
                 >
                   <Play className={`h-3.5 w-3.5 ${isExecutingAdapter ? 'animate-spin' : ''}`} />
-                  <span>{isExecutingAdapter ? 'Executing on Sandbox...' : 'Run Workload'}</span>
+                  <span>{isExecutingAdapter ? 'Running...' : 'Run workload'}</span>
                 </button>
               </div>
 
               {/* Code Editor */}
               <div className="space-y-1.5">
-                <label className="text-xs text-slate-400 font-mono">Adapter Execution Script:</label>
+                <label className="text-xs text-slate-400 font-mono">Script (`input` in, `output` out):</label>
                 <textarea
                   rows={5}
                   value={adapterCodeInput}
@@ -549,6 +535,8 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   className="w-full p-3 bg-slate-950 rounded-lg border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
                 />
               </div>
+
+              <ExecStatus meta={adapterMeta} error={execErrors.adapter} />
 
               {/* Adapter Execution Result */}
               {adapterExecResult && (
@@ -575,19 +563,19 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                       <div className="text-sky-400 font-semibold truncate">{adapterExecResult.adapterType}</div>
                     </div>
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800">
-                      <div className="text-slate-500 text-[10px]">ISOLATION LEVEL</div>
-                      <div className="text-indigo-400 font-semibold truncate">{adapterExecResult.isolationLevel}</div>
+                      <div className="text-slate-500 text-[10px]">ISOLATION (reported)</div>
+                      <div className="text-slate-200 font-semibold truncate">{String(adapterExecResult.isolationLevel ?? '—')}</div>
                     </div>
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800">
                       <div className="text-slate-500 text-[10px]">DURATION</div>
-                      <div className="text-emerald-400 font-semibold">{adapterExecResult.durationMs} ms</div>
+                      <div className="text-slate-200 font-semibold">{measured((adapterExecResult as any).durationMs, ' ms')}</div>
                     </div>
                   </div>
 
                   {adapterExecResult.externalEvidenceSource && (
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800 text-[11px] font-mono text-slate-300">
-                      <span className="text-slate-500 text-[10px] block">EVIDENCE SOURCE</span>
-                      <span className="text-indigo-300">{adapterExecResult.externalEvidenceSource}</span>
+                      <span className="text-slate-500 text-[10px] block">SOURCE (self-reported by adapter)</span>
+                      <span className="text-slate-300">{adapterExecResult.externalEvidenceSource}</span>
                     </div>
                   )}
 
@@ -613,7 +601,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                   <Package className="h-4 w-4 text-sky-400" />
-                  <span>Immutable Package Registry</span>
+                  <span>Package registry</span>
                 </h3>
                 <span className="text-xs text-slate-400 font-mono">{packages.length} Loaded</span>
               </div>
@@ -624,7 +612,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     key={pkg.manifest.packageId}
                     onClick={() => {
                       setSelectedPackage(pkg);
-                      setSelectedAction(pkg.manifest.allowedActions[0] || '');
+                      setSelectedAction(pkg.manifest.allowedActions?.[0] || '');
                       setVkgDigestStatus(null);
                       setVkgExecResult(null);
                     }}
@@ -636,17 +624,24 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   >
                     <div className="flex items-start justify-between">
                       <div>
-                        <div className="font-semibold text-sm text-slate-100">{pkg.manifest.name}</div>
+                        <div className="font-semibold text-sm text-slate-100 flex items-center gap-2">
+                          {pkg.manifest.name}
+                          <RecordBadge record={pkg} fallback="DEMO" />
+                        </div>
                         <div className="text-xs text-slate-400 font-mono mt-0.5">{pkg.manifest.packageId} (v{pkg.manifest.version})</div>
                       </div>
                       <span className="px-2 py-0.5 text-[10px] bg-sky-500/20 text-sky-300 font-mono rounded">
-                        {pkg.manifest.capabilities[0]}
+                        {pkg.manifest.capabilities?.[0] ?? '—'}
                       </span>
                     </div>
 
                     <div className="mt-3 flex items-center justify-between text-xs text-slate-400 font-mono">
-                      <span>Actions: {pkg.manifest.allowedActions.length}</span>
-                      <span>Ceiling: {Math.round(pkg.manifest.memoryCeilingBytes / 1024 / 1024)}MB / {pkg.manifest.timeoutCeilingMs}ms</span>
+                      <span>Actions: {pkg.manifest.allowedActions?.length ?? 0}</span>
+                      <span>
+                        Declared ceiling:{' '}
+                        {hasNumber(pkg.manifest.memoryCeilingBytes) ? `${Math.round(pkg.manifest.memoryCeilingBytes / 1024 / 1024)}MB` : '—'} /{' '}
+                        {measured(pkg.manifest.timeoutCeilingMs, 'ms')}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -659,7 +654,8 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
                     <FileCheck className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Cryptographic Digest Attestation</span>
+                    <span>Content digest check</span>
+                    <EvidenceBadge label="VERIFIED_REPO" title="SHA-256 recomputed by code in this repo" />
                   </h4>
                   <button
                     onClick={() => handleValidatePackage(selectedPackage)}
@@ -683,12 +679,12 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                       {vkgDigestStatus.valid ? (
                         <div className="flex items-center space-x-1.5">
                           <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
-                          <span>Digest verified identical to immutable bytecode &amp; tables.</span>
+                          <span>Digest recomputed by this server matches the manifest (SHA-256 over bytecode &amp; tables).</span>
                         </div>
                       ) : (
                         <div className="flex items-start space-x-1.5">
                           <XCircle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
-                          <span>{vkgDigestStatus.error || 'Digest mismatch: package bytecode tampered!'}</span>
+                          <span>{vkgDigestStatus.error || 'Digest mismatch: package contents differ from the manifest.'}</span>
                         </div>
                       )}
                     </div>
@@ -697,7 +693,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
                 {/* Immutable Data Tables Summary */}
                 <div className="space-y-1.5 pt-2">
-                  <span className="text-xs text-slate-400 font-semibold">Embedded Immutable Data Tables:</span>
+                  <span className="text-xs text-slate-400 font-semibold">Embedded data tables:</span>
                   <pre className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-[11px] font-mono text-indigo-300 overflow-x-auto max-h-40">
                     {JSON.stringify(selectedPackage.dataTables, null, 2)}
                   </pre>
@@ -713,9 +709,9 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                 <div>
                   <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                     <Zap className="h-4 w-4 text-amber-400" />
-                    <span>Deterministic Action Runner</span>
+                    <span>Package action runner</span>
                   </h3>
-                  <p className="text-xs text-slate-400">Consumes external execution authority token fail-closed</p>
+                  <p className="text-xs text-slate-400">The server re-checks the package digest; CAPPO decides in governed mode</p>
                 </div>
                 <div className="flex items-center space-x-2">
                   <span className="text-xs text-slate-400">Action:</span>
@@ -724,7 +720,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     onChange={(e) => setSelectedAction(e.target.value)}
                     className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500"
                   >
-                    {selectedPackage?.manifest.allowedActions.map((act) => (
+                    {(selectedPackage?.manifest.allowedActions ?? []).map((act) => (
                       <option key={act} value={act}>
                         {act}
                       </option>
@@ -735,7 +731,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
               {/* Input JSON Editor */}
               <div className="space-y-1.5">
-                <label className="text-xs text-slate-400 font-mono">Governed Input Payload (JSON):</label>
+                <label className="text-xs text-slate-400 font-mono">Input payload (JSON):</label>
                 <textarea
                   value={vkgInputJson}
                   onChange={(e) => setVkgInputJson(e.target.value)}
@@ -746,8 +742,8 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
               <div className="flex items-center justify-between pt-2">
                 <div className="text-xs text-slate-400 flex items-center space-x-1.5">
-                  <Lock className="h-3.5 w-3.5 text-indigo-400" />
-                  <span>Authority verified before sandboxed VM execution</span>
+                  <Lock className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Governed mode: CAPPO is asked before the sandbox runs</span>
                 </div>
                 <button
                   onClick={handleExecuteVkg}
@@ -755,15 +751,17 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-indigo-600/20"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  <span>{isExecutingVkg ? 'Executing in Sandbox...' : 'Execute Governed .vkg'}</span>
+                  <span>{isExecutingVkg ? 'Running...' : 'Run .vkg action'}</span>
                 </button>
               </div>
+
+              <ExecStatus meta={vkgMeta} error={execErrors.vkg} />
 
               {/* Execution Result Box */}
               {vkgExecResult && (
                 <div className="mt-4 border-t border-slate-800 pt-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-300">Execution Telemetry &amp; Output</span>
+                    <span className="text-xs font-bold text-slate-300">Execution output</span>
                     <span className={`px-2 py-0.5 text-[11px] font-mono rounded ${
                       vkgExecResult.status === 'SUCCESS'
                         ? 'bg-emerald-500/20 text-emerald-300'
@@ -776,17 +774,26 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   <div className="grid grid-cols-3 gap-3 text-xs font-mono">
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800">
                       <div className="text-slate-500 text-[10px]">DURATION</div>
-                      <div className="text-sky-400 font-semibold">{vkgExecResult.durationMs} ms</div>
+                      <div className="text-slate-200 font-semibold">{measured((vkgExecResult as any).durationMs, ' ms')}</div>
                     </div>
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800">
-                      <div className="text-slate-500 text-[10px]">MEMORY USED</div>
-                      <div className="text-indigo-400 font-semibold">{Math.round(vkgExecResult.memoryUsageBytes / 1024)} KB</div>
+                      <div className="text-slate-500 text-[10px]">CHILD PROCESS MEMORY</div>
+                      <div className="text-slate-200 font-semibold">
+                        {hasNumber((vkgExecResult as any).memoryUsageBytes) ? `${Math.round((vkgExecResult as any).memoryUsageBytes / 1024)} KB` : 'not measured'}
+                      </div>
                     </div>
                     <div className="p-2.5 bg-slate-950 rounded border border-slate-800">
-                      <div className="text-slate-500 text-[10px]">CONTAINMENT</div>
-                      <div className="text-emerald-400 font-semibold">{vkgExecResult.containmentObserved ? 'OBSERVED' : 'NONE'}</div>
+                      <div className="text-slate-500 text-[10px]">BOUNDARY</div>
+                      <div className="text-slate-200 font-semibold">{vkgExecResult.containmentObserved ? 'child process' : 'none reported'}</div>
                     </div>
                   </div>
+
+                  {vkgMeta?.data?.digestCheck && (
+                    <div className="p-2.5 bg-slate-950 rounded border border-slate-800 text-[11px] font-mono text-slate-300">
+                      <span className="text-slate-500 text-[10px] block">DIGEST CHECK (server)</span>
+                      {JSON.stringify(vkgMeta.data.digestCheck)}
+                    </div>
+                  )}
 
                   <div className="space-y-1">
                     <span className="text-xs text-slate-400 font-mono">Output Data:</span>
@@ -795,7 +802,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     </pre>
                   </div>
 
-                  {vkgExecResult.stdout?.length > 0 && (
+                  {Array.isArray(vkgExecResult.stdout) && vkgExecResult.stdout.length > 0 && (
                     <div className="space-y-1">
                       <span className="text-xs text-slate-400 font-mono">Stdout Logs:</span>
                       <div className="p-2.5 bg-slate-950 rounded border border-slate-800 text-[11px] font-mono text-slate-300 space-y-0.5">
@@ -822,9 +829,9 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                     <Key className="h-4 w-4 text-emerald-400" />
-                    <span>Active Bounded Leases</span>
+                    <span>Offline leases (local records)</span>
                   </h3>
-                  <span className="text-xs text-slate-400 font-mono">{leases.length} Active</span>
+                  <span className="text-xs text-slate-400 font-mono">{leases.length} total</span>
                 </div>
 
                 <div className="space-y-2">
@@ -840,11 +847,14 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     >
                       <div className="flex items-start justify-between">
                         <div>
-                          <div className="font-semibold text-sm text-slate-100">{lease.leaseId}</div>
+                          <div className="font-semibold text-sm text-slate-100 flex items-center gap-2">
+                            {lease.leaseId}
+                            <RecordBadge record={lease} fallback="UNVERIFIED" />
+                          </div>
                           <div className="text-xs text-slate-400 font-mono mt-0.5">{lease.workspaceId}</div>
                         </div>
-                        <span className="px-2 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 font-mono rounded">
-                          {lease.executionsRemaining} / {lease.maxExecutions} Left
+                        <span className="px-2 py-0.5 text-[10px] bg-slate-800 text-slate-300 font-mono rounded">
+                          {leaseExpired(lease) ? 'EXPIRED' : lease.isRevoked ? 'REVOKED' : `${lease.executionsRemaining} / ${lease.maxExecutions} left`}
                         </span>
                       </div>
 
@@ -858,7 +868,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
                 {/* Provision New Offline Lease */}
                 <div className="pt-3 border-t border-slate-800 space-y-3">
-                  <span className="text-xs font-semibold text-slate-300">Provision New Offline Continuation Lease:</span>
+                  <span className="text-xs font-semibold text-slate-300">Create a local offline lease:</span>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div>
                       <label className="text-slate-400 text-[11px] block">Max Quota:</label>
@@ -883,7 +893,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     onClick={handleCreateLease}
                     className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium transition cursor-pointer"
                   >
-                    + Provision Bounded Lease
+                    + Create lease
                   </button>
                 </div>
               </div>
@@ -896,9 +906,9 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   <div>
                     <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                       <Clock className="h-4 w-4 text-sky-400" />
-                      <span>Offline Governed Execution</span>
+                      <span>Run under lease</span>
                     </h3>
-                    <p className="text-xs text-slate-400">Advances monotonic nonce and logs to local substrate journal</p>
+                    <p className="text-xs text-slate-400">Decrements the lease quota, advances its nonce counter and writes a local journal entry</p>
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="text-xs text-slate-400">Action:</span>
@@ -931,13 +941,15 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center space-x-2"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  <span>Execute Offline Under Lease</span>
+                  <span>Run under selected lease</span>
                 </button>
+
+                <ExecStatus meta={offlineMeta} error={execErrors.offline} />
 
                 {offlineExecResult && (
                   <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-xs font-mono space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-emerald-400">Execution {offlineExecResult.status}</span>
+                      <span className="text-slate-200">Execution {offlineExecResult.status}</span>
                       <span className="text-slate-400">Nonce: {selectedLease?.currentNonce}</span>
                     </div>
                     <pre className="text-slate-300 text-[11px] overflow-x-auto">
@@ -955,32 +967,33 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
               <div>
                 <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                   <Database className="h-4 w-4 text-indigo-400" />
-                  <span>Local Substrate Observations Journal &amp; PGL Settlement</span>
+                  <span>Local observations journal</span>
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Unreconciled offline executions awaiting cryptographic Merkle proof batch settlement
+                  Offline executions recorded locally. "Reconcile" groups them into a LOCAL batch; nothing is submitted to PGL or settled.
                 </p>
               </div>
 
               <div className="flex items-center space-x-3">
                 <span className="text-xs text-slate-300 font-mono">
-                  Pending: <strong className="text-amber-400">{observations.filter((o) => !o.reconciled).length}</strong>
+                  Pending: <strong className="text-amber-400">{pendingObservations}</strong>
                 </span>
                 <button
                   onClick={handleReconcileOffline}
-                  disabled={isReconciling || observations.filter((o) => !o.reconciled).length === 0}
+                  disabled={isReconciling || pendingObservations === 0}
                   className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5 shadow-md"
                 >
                   <RotateCw className={`h-3.5 w-3.5 ${isReconciling ? 'animate-spin' : ''}`} />
-                  <span>Reconcile to Proof Graph Ledger</span>
+                  <span>Batch locally (not submitted)</span>
                 </button>
               </div>
             </div>
 
             {reconcileMessage && (
-              <div className="p-3 bg-emerald-950/40 border border-emerald-500/40 rounded-lg text-xs text-emerald-300 font-mono flex items-center space-x-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+              <div className="p-3 bg-slate-950 border border-slate-700 rounded-lg text-xs text-slate-300 font-mono flex items-center space-x-2">
+                <CheckCircle2 className="h-4 w-4 text-slate-400 shrink-0" />
                 <span>{reconcileMessage}</span>
+                <EvidenceBadge label="UNVERIFIED" />
               </div>
             )}
 
@@ -1008,17 +1021,17 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                     observations.map((obs) => (
                       <tr key={obs.id} className="hover:bg-slate-800/40">
                         <td className="p-2.5 font-semibold text-slate-200">{obs.id}</td>
-                        <td className="p-2.5 text-slate-400">{new Date(obs.timestamp).toLocaleTimeString()}</td>
+                        <td className="p-2.5 text-slate-400">
+                          {obs.timestamp ? new Date(obs.timestamp).toLocaleTimeString() : '—'} <RecordBadge record={obs} fallback="UNVERIFIED" />
+                        </td>
                         <td className="p-2.5 text-sky-400">{obs.action}</td>
                         <td className="p-2.5 text-indigo-300">{obs.nonce}</td>
                         <td className="p-2.5 text-slate-400 text-[11px] truncate max-w-[140px]">{obs.responseDigest}</td>
                         <td className="p-2.5 text-right">
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            obs.reconciled
-                              ? 'bg-emerald-500/20 text-emerald-300'
-                              : 'bg-amber-500/20 text-amber-300'
+                            obs.reconciled ? 'bg-slate-700/60 text-slate-200' : 'bg-amber-500/20 text-amber-300'
                           }`}>
-                            {obs.reconciled ? 'RECONCILED' : 'UNRECONCILED'}
+                            {obs.reconciled ? 'BATCHED LOCALLY' : 'PENDING'}
                           </span>
                         </td>
                       </tr>
@@ -1039,16 +1052,31 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
               <div>
                 <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
                   <ShieldCheck className="h-4 w-4 text-rose-400" />
-                  <span>Adversarial Validation Matrix (16 Scenarios)</span>
+                  <span>Adversarial test suite ({testReport?.totalTests ?? '?'} scenarios)</span>
+                  <EvidenceBadge label="VERIFIED_REPO" title="Tests in this repository, run against this server just now" />
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Hostile inputs, signature forgeries, capability escalations, digest mismatches, and offline bound violations
+                  Tests in this repo, run on this server: hostile inputs, forged signatures, capability escalation, digest mismatch,
+                  offline bound violations. A pass means the local check rejected the case; it is not an external audit.
                 </p>
               </div>
 
               <div className="flex items-center space-x-3">
-                <div className="px-3 py-1 bg-emerald-950/60 border border-emerald-500/40 rounded-lg text-xs font-mono text-emerald-300">
-                  Pass Rate: <strong>{testReport?.passed || 16} / {testReport?.totalTests || 16} (100%)</strong>
+                <div
+                  className={`px-3 py-1 rounded-lg text-xs font-mono border ${
+                    testReport?.allPassed ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300' : 'bg-slate-950 border-slate-700 text-slate-300'
+                  }`}
+                >
+                  {testReport ? (
+                    <>
+                      Passed: <strong>{testReport.passed ?? '?'} / {testReport.totalTests ?? '?'}</strong>
+                      {hasNumber(testReport.failed) && testReport.failed > 0 && <span className="text-rose-300"> · {testReport.failed} failed</span>}
+                    </>
+                  ) : testError ? (
+                    <span className="text-rose-300">Run failed: {testError}</span>
+                  ) : (
+                    'Not run yet'
+                  )}
                 </div>
                 <button
                   onClick={runAdversarialTests}
@@ -1056,7 +1084,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
                   className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:bg-slate-800 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5 shadow-md"
                 >
                   <RotateCw className={`h-3.5 w-3.5 ${isRunningTests ? 'animate-spin' : ''}`} />
-                  <span>{isRunningTests ? 'Executing Test Suite...' : 'Re-Run Adversarial Matrix'}</span>
+                  <span>{isRunningTests ? 'Running tests...' : 'Run test suite'}</span>
                 </button>
               </div>
             </div>
@@ -1113,7 +1141,7 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
 
                   <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
                     <span>Category: {test.category}</span>
-                    <span>{test.durationMs}ms</span>
+                    <span>{measured(test.durationMs, 'ms')}</span>
                   </div>
                 </div>
               ))}
@@ -1124,3 +1152,24 @@ export const VkgAndOfflineSubstrate: React.FC = () => {
     </div>
   );
 };
+
+const ExecStatus: React.FC<{ meta: ExecMeta; error?: string | null }> = ({ meta, error }) => (
+  <>
+    {error && (
+      <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">Request failed: {error}</div>
+    )}
+    {meta && meta.status >= 400 && !meta.data?.governance && (
+      <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">
+        HTTP {meta.status}: {meta.data?.title ?? ''} {meta.data?.detail ?? ''}
+      </div>
+    )}
+    {meta?.data?.governance && (
+      <GovernanceBlock governance={meta.data.governance} status={meta.status} problem={meta.status >= 400 ? meta.data : null} />
+    )}
+    {meta && meta.status >= 400 && meta.status !== 403 && meta.status !== 503 && meta.data?.governance && meta.data?.detail && (
+      <div className="text-[11px] font-mono text-rose-300">
+        HTTP {meta.status}: {meta.data.title} — {meta.data.detail}
+      </div>
+    )}
+  </>
+);

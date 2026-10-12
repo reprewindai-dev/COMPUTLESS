@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import {
   INITIAL_SUBSTRATE_NODES,
   INITIAL_CAPPO_GRANTS,
@@ -30,10 +29,11 @@ import {
   ActionExecutionConfirmationCertificate,
 } from '../types.js';
 import {
-  generateActionEvidence,
-  confirmActionExecution,
   buildEvidenceMerkleTree,
   generateEvidenceMerkleProof,
+  hashPayload,
+  verifyActionEvidence,
+  verifyPGLRecordSignature,
 } from './cryptoUtils.js';
 import { createDefaultVkgPackages } from './vkgEngine.js';
 import {
@@ -44,6 +44,7 @@ import {
 } from '../types.js';
 
 export interface DBState {
+  schemaVersion: number;
   substrateNodes: SubstrateNode[];
   cappoGrants: CAPPOGrant[];
   plugins: PluginModule[];
@@ -62,294 +63,185 @@ export interface DBState {
   offlineLeases: BoundedOfflineLease[];
   localObservations: LocalSubstrateObservation[];
   reconciliations: ReconciliationPayload[];
+  /** Counters of local actions handled by this server (not governed by CAPPO unless governance says so). */
   totalGovernedActions: number;
   totalSafeRoutes: number;
   lastSavedAt: string;
 }
 
+/**
+ * Bump when seeds or record semantics change. A stored file with a different
+ * version is discarded (not merged), so legacy fabricated records (TPM evidence,
+ * "settled" payouts, VERIFIED certificates, ...) can never re-enter proof paths.
+ */
+export const DB_SCHEMA_VERSION = 2;
+
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'substrate_db.json');
 
+/** Demo identities. Counters start at 0 and only count local actions on this server. */
 const INITIAL_IDENTITIES: AgentIdentity[] = [
   {
     id: 'agent:veklom-root-001',
-    name: 'Veklom Sovereign Root Operator',
-    publicKey: '0x_vk_pub_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    name: 'Demo Root Operator Identity',
+    publicKey: 'demo-seed (no key)',
+    keyType: 'id-digest (not a key)',
     trustTier: 'T4_SOVEREIGN_ROOT',
     allowedCapabilities: ['cap-compute-v1', 'cap-persist-v1', 'cap-rf-telecom', 'cap-agent-recurse', 'cap-mcp-bridge'],
-    totalActionsGoverned: 142,
-    totalReceiptsIssued: 89,
-    evidenceChainLength: 142,
-    recursionDepth: 8,
+    totalActionsGoverned: 0,
+    totalReceiptsIssued: 0,
+    evidenceChainLength: 0,
+    recursionDepth: 0,
     lastActiveAt: new Date().toISOString(),
-    registeredAt: '2026-01-15T00:00:00.000Z',
-    sandboxRuntimePreference: 'docker_isolated',
+    registeredAt: new Date().toISOString(),
+    sandboxRuntimePreference: 'node_vm',
+    evidenceLabel: 'DEMO',
   },
   {
     id: 'agent:herdr-autonomous-core',
-    name: 'Herdr Recursive Self-Hosting Agent',
-    publicKey: '0x_vk_pub_ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+    name: 'Demo Herdr Agent Identity',
+    publicKey: 'demo-seed (no key)',
+    keyType: 'id-digest (not a key)',
     trustTier: 'T3_SUBSTRATE_CORE',
     allowedCapabilities: ['cap-compute-v1', 'cap-agent-recurse', 'cap-mcp-bridge'],
-    totalActionsGoverned: 98,
-    totalReceiptsIssued: 64,
-    evidenceChainLength: 98,
-    recursionDepth: 5,
+    totalActionsGoverned: 0,
+    totalReceiptsIssued: 0,
+    evidenceChainLength: 0,
+    recursionDepth: 0,
     lastActiveAt: new Date().toISOString(),
-    registeredAt: '2026-02-01T00:00:00.000Z',
+    registeredAt: new Date().toISOString(),
     sandboxRuntimePreference: 'node_vm',
+    evidenceLabel: 'DEMO',
   },
   {
-    id: 'agent:e2b-sandbox-runner',
-    name: 'E2B Bounded Execution Worker',
-    publicKey: '0x_vk_pub_4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
+    id: 'agent:demo-sandbox-worker',
+    name: 'Demo Sandbox Worker Identity',
+    publicKey: 'demo-seed (no key)',
+    keyType: 'id-digest (not a key)',
     trustTier: 'T2_AUTONOMOUS',
     allowedCapabilities: ['cap-compute-v1'],
-    totalActionsGoverned: 45,
-    totalReceiptsIssued: 32,
-    evidenceChainLength: 45,
-    recursionDepth: 3,
+    totalActionsGoverned: 0,
+    totalReceiptsIssued: 0,
+    evidenceChainLength: 0,
+    recursionDepth: 0,
     lastActiveAt: new Date().toISOString(),
-    registeredAt: '2026-03-10T00:00:00.000Z',
-    sandboxRuntimePreference: 'e2b_cloud_cell',
+    registeredAt: new Date().toISOString(),
+    sandboxRuntimePreference: 'node_vm',
+    evidenceLabel: 'DEMO',
   },
   {
     id: 'agent:mcp-tool-bridge',
-    name: 'MCP Context Protocol Bridge',
-    publicKey: '0x_vk_pub_4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a',
+    name: 'Demo MCP Bridge Identity',
+    publicKey: 'demo-seed (no key)',
+    keyType: 'id-digest (not a key)',
     trustTier: 'T1_SCOPED',
     allowedCapabilities: ['cap-mcp-bridge'],
-    totalActionsGoverned: 38,
-    totalReceiptsIssued: 21,
-    evidenceChainLength: 38,
-    recursionDepth: 2,
+    totalActionsGoverned: 0,
+    totalReceiptsIssued: 0,
+    evidenceChainLength: 0,
+    recursionDepth: 0,
     lastActiveAt: new Date().toISOString(),
-    registeredAt: '2026-04-12T00:00:00.000Z',
+    registeredAt: new Date().toISOString(),
     sandboxRuntimePreference: 'node_vm',
+    evidenceLabel: 'DEMO',
   },
 ];
 
-const INITIAL_RECEIPTS: AuthorizationReceipt[] = [
-  {
-    receiptId: 'rcpt-vk-8f4b2190',
-    cappoGrantId: 'cappo-grant-alpha-001',
-    subject: 'agent:veklom-root-001',
-    scopeDigest: '0x3a7bd20a8d7a8e8b234190fa7c7b28b6d859b1',
-    nonce: '0x_nonce_91ab4c887201ef',
-    policyId: 'policy-strict-invariant-001',
-    targetCapability: 'cap-compute-v1',
-    issuedAt: new Date(Date.now() - 3600000).toISOString(),
-    expiresAt: Date.now() + 86400000,
-    signature: '0x_rcpt_sig_8820f9a2b8471c9902bd3a1194ac27b8',
-    status: 'active',
-  },
-  {
-    receiptId: 'rcpt-vk-192a0c7e',
-    cappoGrantId: 'cappo-grant-alpha-001',
-    subject: 'agent:herdr-autonomous-core',
-    scopeDigest: '0x49f01ca8817290bc6612b918ca12803b98c772',
-    nonce: '0x_nonce_aa482910fd47ba',
-    policyId: 'policy-strict-invariant-001',
-    targetCapability: 'cap-agent-recurse',
-    issuedAt: new Date(Date.now() - 7200000).toISOString(),
-    expiresAt: Date.now() + 86400000,
-    signature: '0x_rcpt_sig_e48b0a991f8872c019ba228c9918bc22',
-    status: 'consumed',
-    consumedAt: new Date(Date.now() - 7100000).toISOString(),
-  },
-];
-
+/** Demo refusal records. No real request was blocked and no quarantine exists. */
 const INITIAL_BLOCKED: BlockedIntentRecord[] = [
   {
-    id: 'blk-int-9402',
-    timestamp: new Date(Date.now() - 14400000).toISOString(),
-    subject: 'agent:untrusted-crawler-guest',
-    attemptedCapability: 'cap-persist-v1',
+    id: 'blk-int-demo-1',
+    timestamp: new Date().toISOString(),
+    subject: 'demo:unscoped-caller',
+    attemptedCapability: 'cap-db-persist',
     reason: 'INSUFFICIENT_SCOPE',
     httpStatus: 403,
     problemDetails: {
-      type: 'https://computless.cloud/probs/cappo-403-forbidden',
-      title: 'Authority Check Failed',
+      type: 'urn:computless:problem:cappo-403-forbidden',
+      title: 'Demo refusal record',
       status: 403,
-      detail: 'Subject lacks active CAPPO credential for persistent database writes.',
+      detail: 'Demo seed: illustrates the shape of a 403 refusal. No request was actually blocked.',
       instance: '/api/substrate/route',
     },
     threatLevel: 'HIGH',
-    quarantineApplied: true,
-  },
-  {
-    id: 'blk-int-8821',
-    timestamp: new Date(Date.now() - 28800000).toISOString(),
-    subject: 'agent:external-mcp-probe',
-    attemptedCapability: 'cap-rf-telecom',
-    reason: 'REVOKED_GRANT',
-    httpStatus: 403,
-    problemDetails: {
-      type: 'https://computless.cloud/probs/cappo-403-forbidden',
-      title: 'Revoked CAPPO Grant Terminal Denial',
-      status: 403,
-      detail: 'Attempted to invoke telecom mesh with revoked credential. Fail-closed Invariant 1 triggered.',
-      instance: '/api/substrate/route',
-    },
-    threatLevel: 'CRITICAL',
-    quarantineApplied: true,
+    quarantineApplied: false,
+    evidenceLabel: 'DEMO',
   },
 ];
 
-const INITIAL_ACTION_EVIDENCE: ActionEvidenceRecord[] = [
-  {
-    id: 'ev-pgl-root-genesis',
-    timestamp: '2026-08-16T12:00:00.000Z',
-    blockHeight: 1,
-    transactionId: 'tx-genesis-0001',
-    capabilityId: 'cap-compute-v1',
-    subject: 'agent:veklom-root-001',
-    cappoGrantId: 'cappo-grant-alpha-001',
-    executingNodeId: 'node-us-east-metal',
-    executingNodeName: 'Sovereign Bare-Metal Enclave',
-    requestPayloadHash: '0x8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4',
-    responseHash: '0x3857b64010a30b0ee11330d172e2764b8bb6d8a211910efc680696b0142cbb86',
-    parentBlockHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
-    blockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
-    pglSignature: '0x_sig_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-    merkleLeafHash: '0x1c3a647d6928e4695781a9544974246990264d1f2b604e3391b489d81d2222ff',
-    nonce: '0x_ev_nonce_genesis01',
-    enclaveHardwareProof: 'enclave_tpm2_attestation_genesis_root',
-    verifiable: true,
-  },
-  {
-    id: 'ev-pgl-herdr-recurse',
-    timestamp: '2026-08-16T13:30:00.000Z',
-    blockHeight: 2,
-    transactionId: 'tx-agent-9921',
-    capabilityId: 'cap-agent-recurse',
-    subject: 'agent:herdr-autonomous-core',
-    cappoGrantId: 'cappo-grant-herdr-002',
-    executingNodeId: 'node-eu-west-k8s',
-    executingNodeName: 'Frankfurt Confidential K8s Cell',
-    requestPayloadHash: '0x2c624232cdd221771294dfbb310aca000a0df6ac9b66b0d199f34f4944366e56',
-    responseHash: '0x5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8',
-    parentBlockHash: '0xa41fb97e2f5b89a81e3a479d2b271d431c3bf88a6d96e57cb3479a0cfbf0192d',
-    blockHash: '0xb234a91ef8839cb8a101b0c0349a1d2f9933e144a8029c7d4481b7a00119beef',
-    pglSignature: '0x_sig_8d23467189abcd1048aef0011883abefc8821948ae1082c91823901847120199',
-    merkleLeafHash: '0x4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
-    nonce: '0x_ev_nonce_herdr_rec99',
-    enclaveHardwareProof: 'enclave_tpm2_attestation_k8s_cell_02',
-    verifiable: true,
-  },
-];
-
-const INITIAL_CERTIFICATES: ActionExecutionConfirmationCertificate[] = [
-  {
-    certificateId: 'aecc-genesis-0001',
-    timestamp: '2026-08-16T12:00:01.000Z',
-    actionId: 'act-genesis-001',
-    transactionId: 'tx-genesis-0001',
-    capabilityId: 'cap-compute-v1',
-    subject: 'agent:veklom-root-001',
-    executingNodeId: 'node-us-east-metal',
-    overallConfirmationStatus: 'FULLY_CONFIRMED',
-    confirmationScorePct: 98,
-    dimensions: {
-      schemaConformance: {
-        status: 'PASSED',
-        scorePct: 100,
-        matchedFields: ['status', 'result', 'executionMetrics'],
-        missingRequiredFields: [],
-        typeMismatchFields: [],
-        details: 'Output payload 100% conforms to cap-compute-v1 JSON schema specification.',
-      },
-      slaLatency: {
-        status: 'PASSED',
-        scorePct: 100,
-        actualWallClockLatencyMs: 12,
-        budgetedMaxLatencyMs: 170,
-        varianceMs: -158,
-        slaCompliant: true,
-        details: 'Execution completed in 12ms (Budget: 170ms, Margin: +158ms).',
-      },
-      resourceContainment: {
-        status: 'PASSED',
-        scorePct: 100,
-        memoryUsedBytes: 49152,
-        memoryQuotaBytes: 268435456,
-        memoryUsagePct: 0.02,
-        cpuExecutionMs: 12,
-        runtimeObservation: {
-          state: 'VERIFIED',
-          isolationLevel: 'HARDWARE_ENCLAVE',
-          verifiedByEvidence: true,
-          evidenceSource: 'TPM_2_0_ENCLAVE_ATTESTATION',
-          measuredAt: '2026-08-16T12:00:01.000Z',
-          details: 'Hardware enclave isolation verified by external TPM attestation.',
-        },
-        details: 'Sandbox heap memory bounded at 48.0 KB (0.02% of 256MB quota). Containment verified.',
-      },
-      runtimeExit: {
-        status: 'PASSED',
-        scorePct: 100,
-        exitCode: 0,
-        errorCount: 0,
-        runtimeStatus: 'SUCCESS',
-        stdoutLineCount: 3,
-        details: 'Process terminated cleanly with Exit Code 0. No unhandled exceptions or panic signals.',
-      },
-      hardwareTelemetry: {
-        status: 'VERIFIED',
-        scorePct: 100,
-        monotonicCounterDelta: 4,
-        uptimeAttestationPct: 99.99,
-        enclaveAttestationValid: true,
-        nonceFreshness: 'FRESH',
-        hardwareProofState: 'VERIFIED',
-        details: 'Hardware TPM attestation verified. Monotonic clock increment verified, uptime attested at 99.99%.',
-      },
-    },
-    cryptographicAttestationSignature: '0x_aecc_sig_genesis_root_998127391823019823901823091823',
-    issuer: 'computless://substrate/measurement-verifier/v2',
-    summaryVerdict: 'ACTION CONFIRMED (Score: 98%): Action was executed with full schema compliance, within SLA bounds, and verified hardware telemetry.',
-  },
-];
-
-const INITIAL_OFFLINE_LEASES: BoundedOfflineLease[] = [
-  {
-    leaseId: 'lease-off-tax-v1',
-    workspaceId: 'ws-local-enclave-01',
-    mountId: 'mnt-vkg-tax-calc',
-    capabilityId: 'cap-compute-v1',
-    allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary'],
+function demoLease(): BoundedOfflineLease {
+  const leaseId = 'lease-default-offline-001';
+  const workspaceId = 'ws-offline-local-01';
+  const mountId = 'mnt-vkg-tax-01';
+  const capabilityId = 'cap-compute-v1';
+  const allowedActions = ['calculate_vat', 'withholding_rate', 'tax_summary', 'validate_order'];
+  return {
+    leaseId,
+    workspaceId,
+    mountId,
+    capabilityId,
+    allowedActions,
     maxExecutions: 50,
-    executionsRemaining: 48,
-    issuedAt: '2026-03-30T10:00:00.000Z',
-    expiresAt: '2026-12-31T23:59:59.000Z',
-    authorityDigest: '0x_lease_auth_tax_digest_98127391823719823',
-    startNonce: '0x_off_nonce_genesis_001',
-    currentNonce: '0x_off_nonce_genesis_003',
+    executionsRemaining: 50,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+    authorityDigest: hashPayload({ workspaceId, mountId, capabilityId, allowedActions, leaseId }),
+    startNonce: '0x_off_nonce_100',
+    currentNonce: '0x_off_nonce_100',
     isRevoked: false,
-  },
-];
+    evidenceLabel: 'DEMO',
+    canonical: false,
+  };
+}
 
-const INITIAL_LOCAL_OBSERVATIONS: LocalSubstrateObservation[] = [
-  {
-    id: 'obs-local-001',
-    timestamp: '2026-03-30T10:15:00.000Z',
-    executionId: 'exec-off-001',
-    workspaceId: 'ws-local-enclave-01',
-    capabilityId: 'cap-compute-v1',
-    action: 'calculate_vat',
-    runtimeProfile: 'OFFLINE',
-    requestDigest: '0x_req_obs_hash_001',
-    responseDigest: '0x_resp_obs_hash_001',
-    durationMs: 4.2,
-    memoryBytes: 4096,
-    exitCode: 0,
-    nonce: '0x_off_nonce_genesis_002',
-    reconciled: false,
-  },
-];
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+
+function defaultState(): DBState {
+  return {
+    schemaVersion: DB_SCHEMA_VERSION,
+    substrateNodes: clone(INITIAL_SUBSTRATE_NODES),
+    cappoGrants: clone(INITIAL_CAPPO_GRANTS),
+    plugins: clone(INITIAL_PLUGINS),
+    agentTasks: clone(INITIAL_AGENT_TASKS),
+    pglRecords: clone(INITIAL_PGL_RECORDS),
+    actionEvidenceRecords: [],
+    confirmationCertificates: [],
+    fpiProviders: clone(INITIAL_FPI_PROVIDERS),
+    fpiAllocations: clone(INITIAL_FPI_ALLOCATIONS),
+    fpiJobs: clone(INITIAL_FPI_JOBS),
+    fpiSettlements: clone(INITIAL_FPI_SETTLEMENTS),
+    authorizationReceipts: [],
+    blockedIntents: clone(INITIAL_BLOCKED),
+    agentIdentities: clone(INITIAL_IDENTITIES),
+    vkgPackages: createDefaultVkgPackages(),
+    offlineLeases: [demoLease()],
+    localObservations: [],
+    reconciliations: [],
+    totalGovernedActions: 0,
+    totalSafeRoutes: 0,
+    lastSavedAt: new Date().toISOString(),
+  };
+}
+
+export interface PersistenceStatus {
+  file: string;
+  lastSaveOk: boolean | null;
+  lastSaveAt: string | null;
+  lastSaveError: string | null;
+  loadedFrom: 'disk' | 'seeds' | 'seeds-after-legacy-reset' | 'seeds-after-read-error';
+  schemaVersion: number;
+}
 
 export class DatabaseStore {
   private state: DBState;
+  private persistence: PersistenceStatus = {
+    file: path.relative(process.cwd(), DB_FILE),
+    lastSaveOk: null,
+    lastSaveAt: null,
+    lastSaveError: null,
+    loadedFrom: 'seeds',
+    schemaVersion: DB_SCHEMA_VERSION,
+  };
 
   constructor() {
     this.state = this.loadFromDisk();
@@ -357,107 +249,110 @@ export class DatabaseStore {
 
   private loadFromDisk(): DBState {
     try {
-      if (!fs.existsSync(DB_DIR)) {
-        fs.mkdirSync(DB_DIR, { recursive: true });
-      }
+      if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
       if (fs.existsSync(DB_FILE)) {
-        const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
-        const parsed = JSON.parse(fileContent) as DBState;
-        console.log(`[DatabaseStore] Persistent store loaded successfully from ${DB_FILE}`);
-        return {
-          substrateNodes: parsed.substrateNodes || [...INITIAL_SUBSTRATE_NODES],
-          cappoGrants: parsed.cappoGrants || [...INITIAL_CAPPO_GRANTS],
-          plugins: parsed.plugins || [...INITIAL_PLUGINS],
-          agentTasks: parsed.agentTasks || [...INITIAL_AGENT_TASKS],
-          pglRecords: parsed.pglRecords || [...INITIAL_PGL_RECORDS],
-          actionEvidenceRecords: parsed.actionEvidenceRecords || [...INITIAL_ACTION_EVIDENCE],
-          confirmationCertificates: parsed.confirmationCertificates || [...INITIAL_CERTIFICATES],
-          fpiProviders: parsed.fpiProviders || [...INITIAL_FPI_PROVIDERS],
-          fpiAllocations: parsed.fpiAllocations || [...INITIAL_FPI_ALLOCATIONS],
-          fpiJobs: parsed.fpiJobs || [...INITIAL_FPI_JOBS],
-          fpiSettlements: parsed.fpiSettlements || [...INITIAL_FPI_SETTLEMENTS],
-          authorizationReceipts: parsed.authorizationReceipts || [...INITIAL_RECEIPTS],
-          blockedIntents: parsed.blockedIntents || [...INITIAL_BLOCKED],
-          agentIdentities: parsed.agentIdentities || [...INITIAL_IDENTITIES],
-          vkgPackages: parsed.vkgPackages || createDefaultVkgPackages(),
-          offlineLeases: parsed.offlineLeases || [...INITIAL_OFFLINE_LEASES],
-          localObservations: parsed.localObservations || [...INITIAL_LOCAL_OBSERVATIONS],
-          reconciliations: parsed.reconciliations || [],
-          totalGovernedActions: parsed.totalGovernedActions || 323,
-          totalSafeRoutes: parsed.totalSafeRoutes || 184,
-          lastSavedAt: parsed.lastSavedAt || new Date().toISOString(),
-        };
+        const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as Partial<DBState>;
+        if (parsed.schemaVersion === DB_SCHEMA_VERSION) {
+          const d = defaultState();
+          const merged: DBState = { ...d };
+          for (const key of Object.keys(d) as (keyof DBState)[]) {
+            if (parsed[key] !== undefined && parsed[key] !== null) (merged as any)[key] = parsed[key];
+          }
+          merged.schemaVersion = DB_SCHEMA_VERSION;
+          this.persistence.loadedFrom = 'disk';
+          console.log(`[DatabaseStore] Loaded local state from ${DB_FILE}`);
+          return merged;
+        }
+        console.warn(
+          `[DatabaseStore] ${DB_FILE} has schema version ${parsed.schemaVersion ?? 'none'} (expected ${DB_SCHEMA_VERSION}); ` +
+            'discarding it and regenerating from seeds so legacy records cannot re-enter proof paths.'
+        );
+        this.persistence.loadedFrom = 'seeds-after-legacy-reset';
       }
     } catch (err) {
       console.warn(`[DatabaseStore] Failed to read ${DB_FILE}, initializing default state:`, err);
+      this.persistence.loadedFrom = 'seeds-after-read-error';
     }
 
-    const defaultVkg = createDefaultVkgPackages();
-    const defaultLease: BoundedOfflineLease = {
-      leaseId: 'lease-default-offline-001',
-      workspaceId: 'ws-offline-local-01',
-      mountId: 'mnt-vkg-tax-01',
-      capabilityId: 'cap-compute-v1',
-      allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary', 'validate_order'],
-      maxExecutions: 50,
-      executionsRemaining: 50,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
-      authorityDigest: '0x_auth_digest_offline_canonical',
-      startNonce: '0x_off_nonce_100',
-      currentNonce: '0x_off_nonce_100',
-      isRevoked: false,
-    };
-
-    const defaultState: DBState = {
-      substrateNodes: [...INITIAL_SUBSTRATE_NODES],
-      cappoGrants: [...INITIAL_CAPPO_GRANTS],
-      plugins: [...INITIAL_PLUGINS],
-      agentTasks: [...INITIAL_AGENT_TASKS],
-      pglRecords: [...INITIAL_PGL_RECORDS],
-      actionEvidenceRecords: [...INITIAL_ACTION_EVIDENCE],
-      confirmationCertificates: [...INITIAL_CERTIFICATES],
-      fpiProviders: [...INITIAL_FPI_PROVIDERS],
-      fpiAllocations: [...INITIAL_FPI_ALLOCATIONS],
-      fpiJobs: [...INITIAL_FPI_JOBS],
-      fpiSettlements: [...INITIAL_FPI_SETTLEMENTS],
-      authorizationReceipts: [...INITIAL_RECEIPTS],
-      blockedIntents: [...INITIAL_BLOCKED],
-      agentIdentities: [...INITIAL_IDENTITIES],
-      vkgPackages: defaultVkg,
-      offlineLeases: [defaultLease],
-      localObservations: [],
-      reconciliations: [],
-      totalGovernedActions: 323,
-      totalSafeRoutes: 184,
-      lastSavedAt: new Date().toISOString(),
-    };
-
-    this.saveToDisk(defaultState);
-    return defaultState;
+    const state = defaultState();
+    this.saveToDisk(state);
+    return state;
   }
 
   private saveToDisk(stateToSave?: DBState) {
+    const at = new Date().toISOString();
     try {
-      if (!fs.existsSync(DB_DIR)) {
-        fs.mkdirSync(DB_DIR, { recursive: true });
-      }
+      if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
       const dataToPersist = stateToSave || this.state;
-      dataToPersist.lastSavedAt = new Date().toISOString();
+      dataToPersist.lastSavedAt = at;
       fs.writeFileSync(DB_FILE, JSON.stringify(dataToPersist, null, 2), 'utf-8');
-    } catch (err) {
+      this.persistence.lastSaveOk = true;
+      this.persistence.lastSaveError = null;
+    } catch (err: any) {
+      this.persistence.lastSaveOk = false;
+      this.persistence.lastSaveError = String(err?.code ?? err?.message ?? err);
       console.error('[DatabaseStore] Failed to save state to disk:', err);
+    }
+    this.persistence.lastSaveAt = at;
+  }
+
+  /** Real result of the most recent write to disk. */
+  public getPersistenceStatus(): PersistenceStatus {
+    return { ...this.persistence };
+  }
+
+  /** Persist after in-place mutations made elsewhere (e.g. lease counters). */
+  public persist(): void {
+    this.saveToDisk();
+  }
+
+  /** Statuses are derived from time on every read; nothing stays "active" past its expiry. */
+  private refreshDerivedStatuses(): void {
+    const now = Date.now();
+    for (const g of this.state.cappoGrants) {
+      g.status = g.isRevoked ? 'revoked' : g.expiresAt < now ? 'expired' : 'active';
+    }
+    for (const r of this.state.authorizationReceipts) {
+      if (r.status === 'active' && r.expiresAt < now) r.status = 'expired';
+    }
+    for (const a of this.state.fpiAllocations) {
+      if (a.status === 'active' && new Date(a.expiresAt).getTime() < now) a.status = 'expired';
+    }
+    for (const l of this.state.offlineLeases || []) {
+      l.status = l.isRevoked
+        ? 'revoked'
+        : new Date(l.expiresAt).getTime() < now
+          ? 'expired'
+          : l.executionsRemaining <= 0
+            ? 'exhausted'
+            : 'active';
+    }
+  }
+
+  private refreshVerifiable(): void {
+    for (const e of this.state.actionEvidenceRecords) {
+      e.verifiable = verifyActionEvidence(e).valid;
+    }
+    for (const r of this.state.pglRecords) {
+      if (r.signatureScheme === 'local-hmac-action-evidence-v1') {
+        const ev = this.state.actionEvidenceRecords.find((e) => e.transactionId === r.transactionId);
+        r.verifiable = Boolean(ev && ev.pglSignature === r.pglSignature && ev.verifiable);
+      } else if (r.signatureScheme === 'none') {
+        r.verifiable = false;
+      } else {
+        r.verifiable = verifyPGLRecordSignature(r);
+      }
     }
   }
 
   // Getters
   public getSubstrateNodes(): SubstrateNode[] { return this.state.substrateNodes; }
-  public getCappoGrants(): CAPPOGrant[] { return this.state.cappoGrants; }
+  public getCappoGrants(): CAPPOGrant[] { this.refreshDerivedStatuses(); return this.state.cappoGrants; }
   public getPlugins(): PluginModule[] { return this.state.plugins; }
   public getAgentTasks(): AgentTask[] { return this.state.agentTasks; }
-  public getPGLRecords(): PGLRecord[] { return this.state.pglRecords; }
-  public getActionEvidenceRecords(): ActionEvidenceRecord[] { return this.state.actionEvidenceRecords; }
+  public getPGLRecords(): PGLRecord[] { this.refreshVerifiable(); return this.state.pglRecords; }
+  public getActionEvidenceRecords(): ActionEvidenceRecord[] { this.refreshVerifiable(); return this.state.actionEvidenceRecords; }
   public getActionEvidenceRecord(id: string): ActionEvidenceRecord | undefined {
     return this.state.actionEvidenceRecords.find((r) => r.id === id || r.transactionId === id);
   }
@@ -472,19 +367,19 @@ export class DatabaseStore {
     return generateEvidenceMerkleProof(index, this.state.actionEvidenceRecords);
   }
   public getFPIProviders(): FPIProvider[] { return this.state.fpiProviders; }
-  public getFPIAllocations(): FPIResourceAllocation[] { return this.state.fpiAllocations; }
+  public getFPIAllocations(): FPIResourceAllocation[] { this.refreshDerivedStatuses(); return this.state.fpiAllocations; }
   public getFPIJobs(): FPIExecutionJob[] { return this.state.fpiJobs; }
   public getFPISettlements(): FPIBillingSettlement[] { return this.state.fpiSettlements; }
-  public getAuthorizationReceipts(): AuthorizationReceipt[] { return this.state.authorizationReceipts; }
+  public getAuthorizationReceipts(): AuthorizationReceipt[] { this.refreshDerivedStatuses(); return this.state.authorizationReceipts; }
   public getBlockedIntents(): BlockedIntentRecord[] { return this.state.blockedIntents; }
   public getAgentIdentities(): AgentIdentity[] { return this.state.agentIdentities; }
   public getVkgPackages(): VkgPackage[] { return this.state.vkgPackages || []; }
   public getVkgPackage(id: string): VkgPackage | undefined {
     return (this.state.vkgPackages || []).find((p) => p.manifest.packageId === id);
   }
-  public getOfflineLeases(): BoundedOfflineLease[] { return this.state.offlineLeases || []; }
+  public getOfflineLeases(): BoundedOfflineLease[] { this.refreshDerivedStatuses(); return this.state.offlineLeases || []; }
   public getOfflineLease(id: string): BoundedOfflineLease | undefined {
-    return (this.state.offlineLeases || []).find((l) => l.leaseId === id);
+    return this.getOfflineLeases().find((l) => l.leaseId === id);
   }
   public getLocalObservations(): LocalSubstrateObservation[] { return this.state.localObservations || []; }
   public getReconciliations(): ReconciliationPayload[] { return this.state.reconciliations || []; }
@@ -518,12 +413,12 @@ export class DatabaseStore {
   public addReconciliation(payload: ReconciliationPayload): ReconciliationPayload {
     if (!this.state.reconciliations) this.state.reconciliations = [];
     this.state.reconciliations.unshift(payload);
-    // Mark reconciled observations
+    // Mark observations as included in a LOCAL batch. They are not reconciled
+    // with anything: no reconciliation backend exists.
     if (this.state.localObservations) {
       for (const obs of this.state.localObservations) {
         if (payload.localObservations.some((o) => o.id === obs.id)) {
-          obs.reconciled = true;
-          obs.reconciliationBatchId = payload.batchId;
+          obs.localBatchId = payload.batchId;
         }
       }
     }
@@ -545,8 +440,11 @@ export class DatabaseStore {
       requestPayloadHash: record.requestPayloadHash,
       responseHash: record.responseHash,
       pglSignature: record.pglSignature,
-      x402GasSettled: 0.0024,
+      x402GasSettled: null,
       verifiable: record.verifiable,
+      evidenceLabel: record.evidenceLabel ?? 'UNVERIFIED',
+      canonical: false,
+      signatureScheme: 'local-hmac-action-evidence-v1',
     };
     this.state.pglRecords.unshift(pglRec);
     this.state.totalGovernedActions += 1;
@@ -568,7 +466,7 @@ export class DatabaseStore {
     if (tamperPatch.pglSignature) record.pglSignature = tamperPatch.pglSignature;
     record.tamperFlags = {
       isTampered: true,
-      reason: 'Manual / simulated tamper mutation injected into evidence ledger cell.',
+      reason: 'Manual tamper mutation injected into a local evidence record (demo).',
     };
     record.verifiable = false;
     this.saveToDisk();
@@ -582,10 +480,12 @@ export class DatabaseStore {
     return node;
   }
 
-  public toggleSubstrateNode(nodeId: string, status?: 'online' | 'degraded' | 'offline', latencyMs?: number): SubstrateNode | null {
+  /** Operator toggle. 'online' cannot be asserted (no probe exists): it maps to 'unverified'. */
+  public toggleSubstrateNode(nodeId: string, status?: string, latencyMs?: number): SubstrateNode | null {
     const node = this.state.substrateNodes.find((n) => n.id === nodeId);
     if (!node) return null;
-    if (status) node.status = status;
+    if (status === 'offline' || status === 'degraded') node.status = status;
+    else if (status === 'online' || status === 'unverified') node.status = 'unverified';
     if (typeof latencyMs === 'number') node.latencyMs = latencyMs;
     this.saveToDisk();
     return node;
@@ -664,12 +564,16 @@ export class DatabaseStore {
     return provider;
   }
 
-  public updateFPIProviderStatus(id: string, status?: 'active' | 'degraded' | 'offline' | 'maintenance', latencyMs?: number): FPIProvider | null {
+  /**
+   * Operator toggle. 'active' cannot be asserted (no heartbeat is ever received):
+   * it maps to 'unverified'. lastHeartbeatAt is never touched here.
+   */
+  public updateFPIProviderStatus(id: string, status?: string, latencyMs?: number): FPIProvider | null {
     const p = this.state.fpiProviders.find((prov) => prov.id === id);
     if (!p) return null;
-    if (status) p.status = status;
+    if (status === 'offline' || status === 'maintenance' || status === 'suspended' || status === 'degraded') p.status = status;
+    else if (status === 'active' || status === 'unverified') p.status = 'unverified';
     if (typeof latencyMs === 'number') p.maxLatencyMs = latencyMs;
-    p.lastHeartbeatAt = new Date().toISOString();
     this.saveToDisk();
     return p;
   }
@@ -704,34 +608,9 @@ export class DatabaseStore {
     return settlement;
   }
 
-  public settleFPISettlement(settlementId?: string): FPIBillingSettlement {
-    let stl = this.state.fpiSettlements.find((s) => s.id === settlementId);
-    if (!stl) {
-      stl = {
-        id: 'fpi-stl-' + crypto.randomBytes(3).toString('hex'),
-        providerId: 'fpi-provider-aws-sovereign',
-        providerName: 'AWS Nitro Enclave Provider',
-        period: 'Realtime Epoch ' + new Date().toISOString().slice(0, 10),
-        jobsExecuted: this.state.fpiJobs.length,
-        totalComputeUnitsUsed: this.state.fpiJobs.length * 15,
-        totalx402EarnedVEK: +(this.state.fpiJobs.reduce((acc, j) => acc + j.x402GasSettled, 0)).toFixed(4),
-        payoutStatus: 'settled',
-        payoutTxHash: '0x' + crypto.randomBytes(32).toString('hex'),
-        timestamp: new Date().toISOString(),
-      };
-      this.state.fpiSettlements.unshift(stl);
-    } else {
-      stl.payoutStatus = 'settled';
-      stl.payoutTxHash = '0x' + crypto.randomBytes(32).toString('hex');
-      stl.timestamp = new Date().toISOString();
-    }
-    this.saveToDisk();
-    return stl;
-  }
-
   /**
-   * Computes the live 7-Rung Amplification Ladder Metrics:
-   * A = f(G, R, B, S, E, I, N)
+   * Computes the amplification ladder from LOCAL counters. The score is an
+   * arbitrary-weight index over those counts, not a measurement of anything.
    */
   public getAmplificationMetrics(): VeklomAmplificationMetrics {
     const G = this.state.totalGovernedActions;
@@ -740,30 +619,32 @@ export class DatabaseStore {
     const S = this.state.totalSafeRoutes;
     const E = this.state.pglRecords.length;
     const I = this.state.agentIdentities.length;
-    const N = this.state.plugins.filter((p) => p.enabled).length + this.state.fpiProviders.filter((p) => p.status === 'active').length + 2; // +2 for Docker/E2B & Node VM
+    // Enabled plugin catalog flags (DEMO) plus providers COMPUTLESS has actually observed (none).
+    const N = this.state.plugins.filter((p) => p.enabled).length + this.state.fpiProviders.filter((p) => p.status === 'active').length;
 
-    // Mathematical formula score: A = (G * 0.15) + (R * 0.25) + (B * 0.10) + (S * 0.20) + (E * 0.15) + (I * 0.10) + (N * 0.05)
     const amplificationScore = +(G * 0.15 + R * 0.25 + B * 0.1 + S * 0.2 + E * 0.15 + I * 0.1 + N * 0.05).toFixed(2);
-    const systemEntropyPct = +(Math.max(0.2, 5.0 - (amplificationScore / 100))).toFixed(2);
+    const rung = <L extends string>(count: number, label: L) => ({ count, label, status: 'local_count' as const, evidenceLabel: 'UNVERIFIED' as const });
 
     return {
       formula: 'A = f(G, R, B, S, E, I, N)',
       amplificationScore,
       recursionFormula: 'R = f(I, P, A, E)',
       rungs: {
-        rung1_governedActions: { count: G, label: 'Governed Actions (G)', status: 'healthy' },
-        rung2_authorizationReceipts: { count: R, label: 'Authorization Receipts (R)', status: 'healthy' },
-        rung3_blockedIntents: { count: B, label: 'Blocked Intents (B)', status: 'healthy' },
-        rung4_safeRoutes: { count: S, label: 'Safe Routes (S)', status: 'healthy' },
-        rung5_evidenceChainEntries: { count: E, label: 'Evidence Chain Entries (E)', status: 'healthy' },
-        rung6_agentIdentities: { count: I, label: 'Agent Identities (I)', status: 'healthy' },
-        rung7_integrations: { count: N, label: 'Integrations (N)', status: 'healthy' },
+        rung1_governedActions: rung(G, 'Governed Actions (G)'),
+        rung2_authorizationReceipts: rung(R, 'Authorization Receipts (R)'),
+        rung3_blockedIntents: rung(B, 'Blocked Intents (B)'),
+        rung4_safeRoutes: rung(S, 'Safe Routes (S)'),
+        rung5_evidenceChainEntries: rung(E, 'Evidence Chain Entries (E)'),
+        rung6_agentIdentities: rung(I, 'Agent Identities (I)'),
+        rung7_integrations: rung(N, 'Integrations (N)'),
       },
-      latestReceipts: this.state.authorizationReceipts.slice(0, 10),
+      latestReceipts: this.getAuthorizationReceipts().slice(0, 10),
       latestBlocked: this.state.blockedIntents.slice(0, 10),
       activeIdentities: this.state.agentIdentities,
-      systemEntropyPct,
+      systemEntropyPct: null,
       lastEvaluatedAt: new Date().toISOString(),
+      evidenceLabel: 'UNVERIFIED',
+      note: 'Counts of local records/actions on this server (including DEMO seeds). The score is an arbitrary-weight index, not a measurement; entropy is not measured.',
     };
   }
 }

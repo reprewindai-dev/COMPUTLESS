@@ -10,7 +10,7 @@ import {
 import { hashPayload } from './cryptoUtils.js';
 
 /**
- * Computes deterministic SHA-256 digest over a .vkg package's immutable content
+ * Computes a deterministic SHA-256 digest over a .vkg package's content (manifest fields, data tables, handlers)
  */
 export function computeVkgDigest(
   manifest: Omit<VkgManifest, 'contentDigest'>,
@@ -32,7 +32,9 @@ export function computeVkgDigest(
 }
 
 /**
- * Validates .vkg package integrity, ensuring cryptographic digest matches content exactly
+ * Validates .vkg package integrity: recomputes the SHA-256 content digest and
+ * compares it with the manifest. (Self-consistency only; says nothing about who
+ * authored the package.)
  */
 export function validateVkgPackage(pkg: VkgPackage): VkgValidationResult {
   if (!pkg || !pkg.manifest) {
@@ -116,7 +118,7 @@ export async function executeVkgAction(
       durationMs: 0,
       exitCode: 1,
       adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: true,
+      containmentObserved: false,
       measuredError: `Action '${action}' not permitted in .vkg manifest`,
     };
   }
@@ -133,7 +135,7 @@ export async function executeVkgAction(
       durationMs: 0,
       exitCode: 1,
       adapterType: 'VkgRuntimeAdapter',
-      containmentObserved: true,
+      containmentObserved: false,
       measuredError: `Authority '${authority.capabilityId}' not permitted for package`,
     };
   }
@@ -199,14 +201,14 @@ export function createDefaultVkgPackages(): VkgPackage[] {
   // 1. Tax Calculation & Compliance Package
   const taxManifestRaw = {
     packageId: 'vkg-sovereign-tax-calc-v1',
-    name: 'Sovereign Tax & Cross-Border VAT Engine',
+    name: 'Demo VAT Calculator (illustrative rates, not tax advice)',
     version: '1.2.0',
     capabilities: ['cap-compute-v1', 'cap-compliance-v1'],
     allowedActions: ['calculate_vat', 'withholding_rate', 'tax_summary'],
     memoryCeilingBytes: 32 * 1024 * 1024,
     timeoutCeilingMs: 2000,
     schemaVersion: '1.0.0',
-    author: 'Veklom Substrate Core',
+    author: 'COMPUTLESS repo (built-in demo package)',
   };
   const taxDataTables = {
     vatRates: {
@@ -256,26 +258,28 @@ export function createDefaultVkgPackages(): VkgPackage[] {
     manifest: { ...taxManifestRaw, contentDigest: taxDigest },
     dataTables: taxDataTables,
     actionHandlers: taxHandlers,
-    isImmutable: true,
+    // Stored in a mutable local file; the digest detects changes, it does not prevent them.
+    isImmutable: false,
     installedAt: new Date().toISOString(),
+    evidenceLabel: 'DEMO',
   };
 
   // 2. Order & State Invariant Validator Package
   const orderManifestRaw = {
     packageId: 'vkg-order-validator-v1',
-    name: 'Cryptographic Order State Invariant Validator',
+    name: 'Demo Order Validator',
     version: '2.0.1',
     capabilities: ['cap-compute-v1', 'cap-agent-recurse'],
     allowedActions: ['validate_order', 'check_invariants'],
     memoryCeilingBytes: 16 * 1024 * 1024,
     timeoutCeilingMs: 1500,
     schemaVersion: '1.0.0',
-    author: 'Veklom Runtime Security Group',
+    author: 'COMPUTLESS repo (built-in demo package)',
   };
   const orderDataTables = {
     maxOrderValue: 1000000,
     forbiddenCurrencies: ['UNBACKED_FIAT_LEGACY'],
-    allowedStatuses: ['PENDING', 'AUTHORIZED', 'SETTLED', 'CANCELLED'],
+    allowedStatuses: ['PENDING', 'AUTHORIZED', 'COMPLETED', 'CANCELLED'],
   };
   const orderHandlers = {
     validate_order: `
@@ -293,8 +297,8 @@ export function createDefaultVkgPackages(): VkgPackage[] {
       console.log("Validated order " + output.orderId + " -> " + (isValid ? "PASS" : "FAIL"));
     `,
     check_invariants: `
-      output.invariants = ['NON_NEGATIVE_VALUE', 'NON_AMBIENT_AUTHORITY', 'MONOTONIC_SETTLEMENT'];
-      output.status = 'INVARIANTS_ACTIVE';
+      output.checkedByValidateOrder = ['POSITIVE_AMOUNT', 'WITHIN_MAX_ORDER_VALUE', 'ALLOWED_CURRENCY'];
+      output.status = 'LISTED';
     `,
   };
   const orderDigest = computeVkgDigest(orderManifestRaw, orderDataTables, orderHandlers);
@@ -302,9 +306,22 @@ export function createDefaultVkgPackages(): VkgPackage[] {
     manifest: { ...orderManifestRaw, contentDigest: orderDigest },
     dataTables: orderDataTables,
     actionHandlers: orderHandlers,
-    isImmutable: true,
+    isImmutable: false,
     installedAt: new Date().toISOString(),
+    evidenceLabel: 'DEMO',
   };
 
   return [taxPkg, orderPkg];
+}
+
+/**
+ * Evidence label for a package digest check computed now: VERIFIED_REPO only
+ * when the digest matches AND equals the digest of the repo's built-in package
+ * with the same id; otherwise UNVERIFIED (self-consistent at best).
+ */
+export function vkgDigestEvidence(pkg: VkgPackage): { digestValid: boolean; evidenceLabel: 'VERIFIED_REPO' | 'UNVERIFIED'; computedDigest: string } {
+  const v = validateVkgPackage(pkg);
+  const builtin = createDefaultVkgPackages().find((p) => p.manifest.packageId === pkg?.manifest?.packageId);
+  const matchesRepo = Boolean(v.valid && builtin && builtin.manifest.contentDigest === v.computedDigest);
+  return { digestValid: v.valid, evidenceLabel: matchesRepo ? 'VERIFIED_REPO' : 'UNVERIFIED', computedDigest: v.computedDigest };
 }

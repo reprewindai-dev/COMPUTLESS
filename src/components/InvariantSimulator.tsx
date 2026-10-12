@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { SubstrateNode, CapabilityDefinition, CAPPOGrant, HRMRRouteResult } from '../types';
-import { ShieldAlert, RefreshCw, ArrowRight, CheckCircle2, AlertTriangle, Terminal, Lock, Play, Cpu } from 'lucide-react';
+import { ShieldAlert, RefreshCw, CheckCircle2, AlertTriangle, Terminal, Play, Cpu } from 'lucide-react';
+import { DemoDataNote, EvidenceBadge, RecordBadge, measured, hasNumber } from './EvidenceBadge';
 
 interface InvariantSimulatorProps {
   nodes: SubstrateNode[];
@@ -21,9 +22,9 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
   grants,
   onExecuteRoute,
 }) => {
-  const [selectedCapabilityId, setSelectedCapabilityId] = useState<string>(capabilities[0]?.id || 'cap-compute-v1');
-  const [selectedGrantId, setSelectedGrantId] = useState<string>(grants[0]?.grantId || 'cappo-grant-alpha-001');
-  const [selectedNodeId, setSelectedNodeId] = useState<string>(nodes[0]?.id || 'node-local-k8s');
+  const [selectedCapabilityId, setSelectedCapabilityId] = useState<string>(capabilities[0]?.id || '');
+  const [selectedGrantId, setSelectedGrantId] = useState<string>(grants[0]?.grantId || '');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>(nodes[0]?.id || '');
 
   // Simulation Toggles
   const [simulateInvalidCappo, setSimulateInvalidCappo] = useState<boolean>(false);
@@ -32,20 +33,24 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
   // Execution state
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [routeResult, setRouteResult] = useState<HRMRRouteResult | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  // Data arrives after mount; fall back to the first loaded item.
+  const capId = selectedCapabilityId || capabilities[0]?.id || '';
+  const grantId = selectedGrantId || grants[0]?.grantId || '';
+  const nodeId = selectedNodeId || nodes[0]?.id || '';
+  const selectedGrant = grants.find((g) => g.grantId === grantId);
 
   const handleRunTest = async () => {
     setIsExecuting(true);
+    setRunError(null);
     try {
-      const result = await onExecuteRoute(
-        selectedCapabilityId,
-        selectedGrantId,
-        selectedNodeId,
-        simulatePrimary503 ? selectedNodeId : undefined,
-        simulateInvalidCappo
-      );
-      setRouteResult(result);
-    } catch (err) {
-      console.error('Routing execution error:', err);
+      const result = await onExecuteRoute(capId, grantId, nodeId, simulatePrimary503 ? nodeId : undefined, simulateInvalidCappo);
+      if (!result || typeof result !== 'object') throw new Error('empty response');
+      setRouteResult({ ...result, trace: Array.isArray(result.trace) ? result.trace : [] });
+    } catch (err: any) {
+      setRouteResult(null);
+      setRunError(err?.message ? String(err.message) : 'request failed');
     } finally {
       setIsExecuting(false);
     }
@@ -58,13 +63,15 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <span className="px-2.5 py-0.5 rounded text-xs font-mono font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              CORE BREAKTHROUGH: THE TWO INVARIANTS
+              ROUTER SIMULATION: THE TWO INVARIANTS
             </span>
             <h2 className="text-xl font-bold text-white mt-1">
-              HRMR Hierarchical Resource Router &amp; Governance Testbed
+              HRMR router simulation
             </h2>
             <p className="text-sm text-slate-300 mt-1 max-w-3xl">
-              Execution location is interchangeable; authority identity is not. Test how HTTP 403 terminal checks block permission hunting while 503 infrastructure failures transparently reroute compute.
+              Execution location is interchangeable; authority identity is not. This simulation shows how a 403 is terminal while a
+              503 reroutes to another node record. The authority check is a lookup of a <strong>local grant</strong> (not CAPPO), the
+              node failure is simulated, and the output is mock data.
             </p>
           </div>
 
@@ -75,9 +82,16 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
               className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition flex items-center space-x-2 cursor-pointer shadow-lg shadow-indigo-600/30 disabled:opacity-50"
             >
               {isExecuting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              <span>{isExecuting ? 'Routing Substrate...' : 'Execute Request Flow'}</span>
+              <span>{isExecuting ? 'Simulating...' : 'Run route simulation'}</span>
             </button>
           </div>
+        </div>
+
+        <div className="mt-4">
+          <DemoDataNote>
+            Simulation only. No code runs here and no node is contacted; grants are local records, not CAPPO decisions. For real
+            execution with CAPPO authorization use the 8-Layer Pipeline, Amplification Ladder or Runtime Substrate tabs.
+          </DemoDataNote>
         </div>
 
         {/* The Two Invariants Highlights */}
@@ -98,7 +112,7 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
               <span>Invariant 2: Execution Can Move (503 Fallback)</span>
             </div>
             <p className="text-xs text-slate-300">
-              503 infrastructure failure triggers transparent fallback to AWS/Azure/Local without authority drift.
+              A 503 from one node record reroutes to another eligible node record without changing the authority decision.
             </p>
           </div>
         </div>
@@ -117,7 +131,7 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
           <div className="space-y-1.5">
             <label className="text-xs font-mono text-slate-400">Target Capability</label>
             <select
-              value={selectedCapabilityId}
+              value={capId}
               onChange={(e) => setSelectedCapabilityId(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
             >
@@ -131,31 +145,41 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
 
           {/* 2. CAPPO Grant Selector */}
           <div className="space-y-1.5">
-            <label className="text-xs font-mono text-slate-400">CAPPO Authority Grant</label>
+            <label className="text-xs font-mono text-slate-400">Local grant record (not CAPPO)</label>
             <select
-              value={selectedGrantId}
+              value={grantId}
               onChange={(e) => setSelectedGrantId(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
             >
               {grants.map((grant) => (
                 <option key={grant.grantId} value={grant.grantId}>
                   {grant.grantId} - [{grant.subject}]
+                  {(grant as any).status ? ` (${(grant as any).status})` : ''}
                 </option>
               ))}
             </select>
+            {selectedGrant && (
+              <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
+                <RecordBadge record={selectedGrant} fallback="UNVERIFIED" />
+                <span>
+                  expires {hasNumber(selectedGrant.expiresAt) ? new Date(selectedGrant.expiresAt).toLocaleString() : 'unknown'}
+                  {hasNumber(selectedGrant.expiresAt) && selectedGrant.expiresAt < Date.now() ? ' — EXPIRED' : ''}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* 3. Preferred Substrate Target */}
           <div className="space-y-1.5">
-            <label className="text-xs font-mono text-slate-400">Preferred Substrate Node</label>
+            <label className="text-xs font-mono text-slate-400">Preferred node record</label>
             <select
-              value={selectedNodeId}
+              value={nodeId}
               onChange={(e) => setSelectedNodeId(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
             >
               {nodes.map((node) => (
                 <option key={node.id} value={node.id}>
-                  {node.name} [{node.region}] ({node.status})
+                  {node.name} [{node.region}] (stored status: {node.status})
                 </option>
               ))}
             </select>
@@ -169,7 +193,7 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
             <label className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700">
               <div>
                 <span className="text-xs font-semibold text-rose-400 block font-mono">Invalidate Authority (403)</span>
-                <span className="text-[11px] text-slate-400">Simulates revoked or unauthorized token</span>
+                <span className="text-[11px] text-slate-400">Simulates a revoked or unauthorized grant</span>
               </div>
               <input
                 type="checkbox"
@@ -183,7 +207,7 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
             <label className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700">
               <div>
                 <span className="text-xs font-semibold text-sky-400 block font-mono">Simulate Primary Node 503</span>
-                <span className="text-[11px] text-slate-400">Forces primary substrate infrastructure fail</span>
+                <span className="text-[11px] text-slate-400">Pretends the preferred node failed</span>
               </div>
               <input
                 type="checkbox"
@@ -200,12 +224,17 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
             className="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
           >
             {isExecuting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-            <span>Execute HRMR Route Request</span>
+            <span>Run route simulation</span>
           </button>
         </div>
 
         {/* Execution Output & Trace Inspector */}
         <div className="lg:col-span-7 space-y-4">
+          {runError && (
+            <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">
+              Route simulation failed: {runError}
+            </div>
+          )}
           {routeResult ? (
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-5">
               {/* Outcome Header Pill */}
@@ -240,9 +269,10 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
                       >
                         {routeResult.authorityDecision}
                       </span>
+                      <EvidenceBadge label={(routeResult as any).evidenceLabel} fallback="DEMO" />
                     </div>
                     <span className="text-xs text-slate-400 font-mono">
-                      Tx: {routeResult.transactionId} | Execution Time: {routeResult.executionTimeMs}ms
+                      Tx: {routeResult.transactionId} | time: {measured((routeResult as any).executionTimeMs, ' ms')}
                     </span>
                   </div>
                 </div>
@@ -257,26 +287,24 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
               {/* Header Inspector */}
               <div className="space-y-2">
                 <h4 className="text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider">
-                  HTTP Response Headers Inspector
+                  Simulation result
                 </h4>
                 <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono space-y-1.5 text-slate-300">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">X-Veklom-CAPPO:</span>
-                    <span className={routeResult.finalHttpStatus === 403 ? 'text-rose-400' : 'text-emerald-400'}>
-                      {routeResult.finalHttpStatus === 403 ? 'DENIED_TERMINAL' : 'AUTHORIZED'}
+                    <span className="text-slate-500">Local grant check:</span>
+                    <span className={routeResult.finalHttpStatus === 403 ? 'text-rose-400' : 'text-slate-200'}>
+                      {routeResult.finalHttpStatus === 403 ? 'DENIED_TERMINAL' : 'local grant found (not CAPPO)'}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">X-Substrate-PGL:</span>
-                    <span className="text-sky-400 truncate max-w-[240px]">
-                      {routeResult.pglProofHash || 'N/A (403 Terminal)'}
+                    <span className="text-slate-500">Local record hash (not canonical PGL):</span>
+                    <span className="text-slate-300 truncate max-w-[240px]">
+                      {routeResult.pglProofHash || 'none'}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">X-x402-Settlement:</span>
-                    <span className="text-amber-400">
-                      {routeResult.x402SettlementGas ? `${routeResult.x402SettlementGas} VEK` : '0 VEK'}
-                    </span>
+                    <span className="text-slate-500">Settlement:</span>
+                    <span className="text-slate-400">not implemented (nothing is charged or settled)</span>
                   </div>
                 </div>
               </div>
@@ -285,7 +313,7 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
               <div className="space-y-3">
                 <h4 className="text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
                   <Terminal className="h-3.5 w-3.5 text-indigo-400" />
-                  <span>Substrate Layer Trace Logs ({routeResult.trace.length} Steps)</span>
+                  <span>Simulation trace ({routeResult.trace.length} steps)</span>
                 </h4>
 
                 <div className="space-y-2">
@@ -320,9 +348,10 @@ export const InvariantSimulator: React.FC<InvariantSimulatorProps> = ({
               <div className="h-12 w-12 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto border border-indigo-500/20">
                 <Terminal className="h-6 w-6" />
               </div>
-              <h3 className="font-semibold text-white text-base">Ready to Execute HRMR Test Route</h3>
+              <h3 className="font-semibold text-white text-base">Route simulation</h3>
               <p className="text-xs text-slate-400 max-w-md mx-auto">
-                Configure your target capability, authority grant, and failure switches on the left, then click "Execute Request Flow" to observe 403 terminal checks and 503 transparent fallback routing.
+                Pick a capability, local grant and node record, toggle the failure switches, then run the simulation to see a 403
+                stay terminal and a 503 reroute.
               </p>
             </div>
           )}

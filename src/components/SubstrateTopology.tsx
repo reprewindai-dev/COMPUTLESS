@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { SubstrateNode } from '../types';
-import { Server, Cloud, Radio, Cpu, Activity, ShieldCheck, Zap, Globe, Sliders, PlusCircle, CheckCircle2, X } from 'lucide-react';
+import { Server, Cloud, Radio, Cpu, Activity, Globe, Sliders, PlusCircle, CheckCircle2, X } from 'lucide-react';
+import { RecordBadge, EvidenceBadge, measured } from './EvidenceBadge';
 
 interface SubstrateTopologyProps {
   nodes: SubstrateNode[];
@@ -15,18 +16,18 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
   onUpdateNodeLatency,
   onAddNode,
 }) => {
-  const [selectedNodeId, setSelectedNodeId] = useState<string>(nodes[0]?.id || 'node-local-k8s');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>(nodes[0]?.id || '');
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [newNodeName, setNewNodeName] = useState<string>('');
   const [newNodeType, setNewNodeType] = useState<SubstrateNode['type']>('local_k8s');
   const [newNodeRegion, setNewNodeRegion] = useState<string>('us-east-1');
-  const [newNodeBoundary, setNewNodeBoundary] = useState<string>('docker-daemon://localhost');
+  const [newNodeBoundary, setNewNodeBoundary] = useState<string>('localhost');
   const [newNodeSovereign, setNewNodeSovereign] = useState<boolean>(false);
   const [newNodeLatency, setNewNodeLatency] = useState<number>(18);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [addSuccessMsg, setAddSuccessMsg] = useState<string>('');
 
-  const selectedNode = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
+  const selectedNode: SubstrateNode | undefined = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
 
   const handleCreateNode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +46,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
           supportedCapabilities: ['cap-compute-v1', 'cap-persist-v1'],
         });
       }
-      setAddSuccessMsg(`Compute node "${newNodeName}" deployed to substrate topology!`);
+      setAddSuccessMsg(`Node record "${newNodeName}" added to the local registry (UNVERIFIED — nothing was deployed or probed).`);
       setNewNodeName('');
       setTimeout(() => {
         setAddSuccessMsg('');
@@ -61,13 +62,15 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
   const getNodeIcon = (type: SubstrateNode['type']) => {
     switch (type) {
       case 'local_k8s':
-        return <Server className="h-6 w-6 text-emerald-400" />;
+        return <Server className="h-6 w-6 text-slate-300" />;
       case 'aws_edge':
         return <Cloud className="h-6 w-6 text-amber-400" />;
       case 'azure_sovereign':
         return <Globe className="h-6 w-6 text-sky-400" />;
       case 'rf_microcontroller':
         return <Radio className="h-6 w-6 text-purple-400" />;
+      default:
+        return <Server className="h-6 w-6 text-slate-400" />;
     }
   };
 
@@ -81,25 +84,26 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
               <span className="px-2.5 py-0.5 rounded text-xs font-mono font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 Layer 1: Substrate
               </span>
-              <span className="text-xs text-slate-400">Locality-Bounded Hardware &amp; Isolation</span>
+              <span className="text-xs text-slate-400">Node registry (local records)</span>
             </div>
             <h2 className="text-xl font-bold text-white mt-1">
-              Cloud Compute Substrate Topology &amp; Provider Mesh
+              Compute Node Registry
             </h2>
             <p className="text-sm text-slate-300 mt-1 max-w-3xl">
-              Computless Cloud Compute abstracts hardware across AWS, Azure, local container enclaves, and RF microcontrollers.
-              Execution location is interchangeable, while authority identity remains strictly invariant.
+              Node records kept in this server's local store. None of these nodes is probed: status, latency, CPU and memory are
+              stored values, not measurements. Every workload actually runs in this server's own child-process sandbox. Abstracting
+              heterogeneous hardware behind one authority model is a <EvidenceBadge label="TARGET" /> design goal.
             </p>
           </div>
 
           <div className="flex items-center space-x-3 text-xs font-mono">
             <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
-              <span className="text-slate-400 block text-[10px]">COMPUTE NODES</span>
+              <span className="text-slate-400 block text-[10px]">NODE RECORDS</span>
               <span className="text-base font-bold text-white">{nodes.length}</span>
             </div>
             <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-center">
-              <span className="text-slate-400 block text-[10px]">SOVEREIGN BOUNDARIES</span>
-              <span className="text-base font-bold text-emerald-400">
+              <span className="text-slate-400 block text-[10px]">MARKED SOVEREIGN (CONFIGURED)</span>
+              <span className="text-base font-bold text-blue-300">
                 {nodes.filter((n) => n.isSovereign).length} / {nodes.length}
               </span>
             </div>
@@ -113,16 +117,22 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
         <div className="lg:col-span-7 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider font-mono">
-              Active Cloud Compute Instances ({nodes.length})
+              Node records ({nodes.length})
             </h3>
             <button
               onClick={() => setShowAddModal(true)}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm cursor-pointer"
             >
               <PlusCircle className="h-3.5 w-3.5" />
-              <span>Deploy Custom Compute</span>
+              <span>Register node record</span>
             </button>
           </div>
+
+          {nodes.length === 0 && (
+            <div className="p-4 rounded-xl border border-slate-800 bg-slate-900 text-xs font-mono text-slate-400">
+              No node records loaded from the API.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {nodes.map((node) => {
@@ -145,13 +155,17 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                     <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800">
                       {getNodeIcon(node.type)}
                     </div>
-                    <div className="flex items-center space-x-1.5">
-                      <span
-                        className={`h-2.5 w-2.5 rounded-full ${
-                          isOnline ? 'bg-emerald-400' : isDegraded ? 'bg-amber-400' : 'bg-rose-500'
-                        }`}
-                      />
-                      <span className="text-xs font-mono uppercase text-slate-300">{node.status}</span>
+                    <div className="flex flex-col items-end gap-1">
+                      <RecordBadge record={node} fallback="UNVERIFIED" />
+                      <div className="flex items-center space-x-1.5" title="Stored status, not probed">
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full ${
+                            isOnline ? 'bg-slate-300' : isDegraded ? 'bg-amber-400' : node.status === 'offline' ? 'bg-rose-500' : 'bg-slate-500'
+                          }`}
+                        />
+                        <span className="text-xs font-mono uppercase text-slate-300">{String(node.status ?? 'unknown')}</span>
+                        <span className="text-[10px] font-mono text-slate-500">(not probed)</span>
+                      </div>
                     </div>
                   </div>
 
@@ -161,12 +175,12 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                   <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono text-slate-300">
                     <span className="flex items-center space-x-1">
                       <Activity className="h-3.5 w-3.5 text-slate-400" />
-                      <span>{node.latencyMs}ms</span>
+                      <span title="Configured latency used by the router simulation">{measured((node as any).latencyMs, ' ms cfg')}</span>
                     </span>
-                    <span className="text-slate-400">CPU {node.cpuUsagePct}%</span>
+                    <span className="text-slate-400">CPU {measured((node as any).cpuUsagePct, '%')}</span>
                     {node.isSovereign && (
-                      <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded text-[10px]">
-                        SOVEREIGN
+                      <span className="px-1.5 py-0.5 bg-blue-500/10 text-blue-300 border border-blue-500/20 rounded text-[10px]" title="A flag on the record; not attested">
+                        SOVEREIGN (configured)
                       </span>
                     )}
                   </div>
@@ -176,7 +190,8 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
           </div>
         </div>
 
-        {/* Selected Node Inspector & Live Controls */}
+        {/* Selected Node Inspector & Controls */}
+        {selectedNode ? (
         <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-5">
           <div className="flex items-center justify-between border-b border-slate-800 pb-4">
             <div className="flex items-center space-x-3">
@@ -186,6 +201,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
               <div>
                 <h3 className="font-bold text-white text-lg">{selectedNode.name}</h3>
                 <span className="text-xs font-mono text-indigo-400">{selectedNode.region}</span>
+                <div className="mt-1"><RecordBadge record={selectedNode} fallback="UNVERIFIED" /></div>
               </div>
             </div>
 
@@ -193,12 +209,12 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
               <button
                 onClick={() => onToggleNodeStatus(selectedNode.id, 'online')}
                 className={`px-2.5 py-1 text-xs font-mono rounded cursor-pointer ${
-                  selectedNode.status === 'online'
-                    ? 'bg-emerald-500/20 text-emerald-400 font-bold'
+                  selectedNode.status === 'online' || (selectedNode.status as string) === 'unverified'
+                    ? 'bg-slate-700/60 text-slate-200 font-bold'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                ONLINE
+                ONLINE (unverified)
               </button>
               <button
                 onClick={() => onToggleNodeStatus(selectedNode.id, 'degraded')}
@@ -226,7 +242,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
           {/* Node Locality & Hardware Specs */}
           <div className="space-y-3">
             <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider font-mono">
-              Locality &amp; Isolation Boundary
+              Locality boundary (as recorded)
             </h4>
             <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono space-y-2">
               <div className="flex justify-between">
@@ -234,10 +250,14 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                 <span className="text-slate-200 font-semibold">{selectedNode.localityBoundary}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Sovereignty Attestation:</span>
-                <span className={selectedNode.isSovereign ? 'text-emerald-400' : 'text-slate-400'}>
-                  {selectedNode.isSovereign ? 'Cryptographically Sealed Enclave' : 'Standard Edge Domain'}
+                <span className="text-slate-400">Sovereignty:</span>
+                <span className={selectedNode.isSovereign ? 'text-blue-300' : 'text-slate-400'}>
+                  {selectedNode.isSovereign ? 'Sovereign (configured, not attested)' : 'Not marked sovereign'}
                 </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Memory:</span>
+                <span className="text-slate-300">{measured((selectedNode as any).memoryUsagePct, '%')}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">MCP Protocol Proxy:</span>
@@ -253,15 +273,15 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
             <div className="flex justify-between text-xs font-mono">
               <span className="text-slate-400 flex items-center space-x-1">
                 <Sliders className="h-3.5 w-3.5 text-indigo-400" />
-                <span>Simulated Network Latency:</span>
+                <span>Configured latency (used by router simulation):</span>
               </span>
-              <span className="text-indigo-400 font-bold">{selectedNode.latencyMs} ms</span>
+              <span className="text-indigo-400 font-bold">{measured((selectedNode as any).latencyMs, ' ms')}</span>
             </div>
             <input
               type="range"
               min="1"
               max="200"
-              value={selectedNode.latencyMs}
+              value={typeof selectedNode.latencyMs === 'number' ? selectedNode.latencyMs : 1}
               onChange={(e) => onUpdateNodeLatency(selectedNode.id, parseInt(e.target.value, 10))}
               className="w-full accent-indigo-500 bg-slate-950 rounded-lg h-2 cursor-pointer"
             />
@@ -270,33 +290,38 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
           {/* Supported Capability List */}
           <div className="space-y-2">
             <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider font-mono">
-              Supported Capability Catalog ({selectedNode.supportedCapabilities.length})
+              Declared capabilities ({(selectedNode.supportedCapabilities ?? []).length})
             </h4>
             <div className="space-y-1.5">
-              {selectedNode.supportedCapabilities.map((cap) => (
+              {(selectedNode.supportedCapabilities ?? []).map((cap) => (
                 <div
                   key={cap}
                   className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg flex items-center justify-between text-xs font-mono"
                 >
                   <span className="text-slate-300">{cap}</span>
-                  <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-[10px]">
-                    GRANTED
+                  <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                    declared
                   </span>
                 </div>
               ))}
             </div>
           </div>
         </div>
+        ) : (
+          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-6 text-xs font-mono text-slate-400">
+            No node selected.
+          </div>
+        )}
       </div>
 
-      {/* Deploy Custom Compute Node Modal */}
+      {/* Register Node Record Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center space-x-2">
                 <Cpu className="h-5 w-5 text-indigo-400" />
-                <h3 className="font-bold text-white text-base">Onboard &amp; Deploy Cloud Compute Node</h3>
+                <h3 className="font-bold text-white text-base">Register a node record</h3>
               </div>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -313,13 +338,16 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
               </div>
             )}
 
+            <p className="text-[11px] text-slate-400">
+              Adds a record to this server's local registry. Nothing is deployed, contacted or probed; the record is UNVERIFIED.
+            </p>
             <form onSubmit={handleCreateNode} className="space-y-4 text-xs font-mono">
               <div className="space-y-1">
                 <label className="text-slate-300 block">Instance / Node Name</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. BareMetal-Rack-Omega-04"
+                  placeholder="e.g. lab-rack-04"
                   value={newNodeName}
                   onChange={(e) => setNewNodeName(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
@@ -334,10 +362,10 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                     onChange={(e) => setNewNodeType(e.target.value as any)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="local_k8s">Local Bare-Metal / K8s</option>
-                    <option value="aws_edge">AWS Outpost / Edge</option>
-                    <option value="azure_sovereign">Azure Sovereign Enclave</option>
-                    <option value="rf_microcontroller">RF Microcontroller</option>
+                    <option value="local_k8s">Local server / cluster</option>
+                    <option value="aws_edge">Public cloud edge</option>
+                    <option value="azure_sovereign">Sovereign cloud region</option>
+                    <option value="rf_microcontroller">RF microcontroller</option>
                   </select>
                 </div>
                 <div className="space-y-1">
@@ -363,7 +391,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
 
               <div className="grid grid-cols-2 gap-3 items-center pt-1">
                 <div className="space-y-1">
-                  <label className="text-slate-300 block">Network Latency (ms)</label>
+                  <label className="text-slate-300 block">Configured latency (ms)</label>
                   <input
                     type="number"
                     min="1"
@@ -380,7 +408,7 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                     onChange={(e) => setNewNodeSovereign(e.target.checked)}
                     className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-0"
                   />
-                  <span className="text-slate-300 text-xs font-mono">Sovereign Enclave (TPM)</span>
+                  <span className="text-slate-300 text-xs font-mono">Mark as sovereign (configured flag)</span>
                 </label>
               </div>
 
@@ -398,11 +426,11 @@ export const SubstrateTopology: React.FC<SubstrateTopologyProps> = ({
                   className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5"
                 >
                   {isSubmitting ? (
-                    <span>Deploying...</span>
+                    <span>Saving...</span>
                   ) : (
                     <>
                       <PlusCircle className="h-3.5 w-3.5" />
-                      <span>Deploy Instance</span>
+                      <span>Save record</span>
                     </>
                   )}
                 </button>

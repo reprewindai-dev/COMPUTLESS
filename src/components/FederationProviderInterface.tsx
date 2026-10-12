@@ -35,6 +35,14 @@ import {
   FPIDiscoveryQuery,
   CapabilityDefinition,
 } from '../types';
+import { EvidenceBadge, RecordBadge, DemoDataNote, measured, hasNumber } from './EvidenceBadge';
+
+const PROVIDER_TYPE_LABELS: Record<string, string> = {
+  hyperscaler: 'Large public cloud',
+  sovereign_enclave: 'Sovereign provider',
+  decentralized_mesh: 'Decentralized mesh',
+  edge_telecom: 'Edge / telecom',
+};
 
 interface FederationProviderInterfaceProps {
   providers: FPIProvider[];
@@ -97,8 +105,6 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
   const [execResult, setExecResult] = useState<any | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
 
-  // Form State - Settle Billing
-  const [settleMsg, setSettleMsg] = useState('');
 
   // SDK Code Snippet Tab Selection
   const [sdkLang, setSdkLang] = useState<'typescript' | 'python' | 'curl' | 'openapi'>('typescript');
@@ -192,10 +198,6 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
     [providerSummaryMap]
   );
   const globalGrandTotalVEK = globalTotalSettledVEK + globalTotalPendingVEK;
-  const globalFinalityRate =
-    globalGrandTotalVEK > 0
-      ? ((globalTotalSettledVEK / globalGrandTotalVEK) * 100).toFixed(1)
-      : '100.0';
 
   // Handlers
   const handleRegisterProvider = async (e: React.FormEvent) => {
@@ -218,12 +220,14 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
       });
       const data = await res.json();
       if (res.ok) {
-        setRegMsg(`Provider "${data.provider.providerName}" registered! Key: ${data.provider.authKeyHash}`);
+        setRegMsg(
+          `Provider record "${data.provider?.providerName ?? regName}" added (UNVERIFIED — the endpoint was not contacted; status stays unverified until a heartbeat arrives).`
+        );
         setRegName('');
         setShowRegForm(false);
         onRefreshData();
       } else {
-        setRegMsg(`Error: ${data.error}`);
+        setRegMsg(`Error: ${data.detail ?? data.error ?? `HTTP ${res.status}`}`);
       }
     } catch (err: any) {
       setRegMsg(`Error registering: ${err.message}`);
@@ -272,11 +276,11 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
       });
       const data = await res.json();
       if (res.ok) {
-        setAllocMsg(`Lease allocated: ID ${data.allocation.id} (${data.allocation.x402TotalLeaseCostVEK} VEK)`);
+        setAllocMsg(`Lease record ${data.allocation?.id ?? ''} created locally (no capacity was reserved anywhere; nothing was charged).`);
         setShowAllocModal(false);
         onRefreshData();
       } else {
-        setAllocMsg(`Allocation Failed: ${data.error}`);
+        setAllocMsg(`Allocation failed: ${data.detail ?? data.error ?? `HTTP ${res.status}`}`);
       }
     } catch (err: any) {
       setAllocMsg(`Error: ${err.message}`);
@@ -318,8 +322,8 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
           forceFallback: execForceFallback,
         }),
       });
-      const data = await res.json();
-      setExecResult(data);
+      const data = await res.json().catch(() => null);
+      setExecResult(data && typeof data === 'object' ? { ...data, httpStatus: res.status } : { error: `HTTP ${res.status}` });
       onRefreshData();
     } catch (err: any) {
       setExecResult({ error: err.message });
@@ -328,29 +332,13 @@ export const FederationProviderInterface: React.FC<FederationProviderInterfacePr
     }
   };
 
-  const handleSettleBilling = async (settlementId?: string) => {
-    try {
-      const res = await fetch('/api/fpi/billing/settle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settlementId }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setSettleMsg(`x402 Payout Settled! Tx: ${data.settlement.payoutTxHash.slice(0, 18)}...`);
-        onRefreshData();
-      }
-    } catch (err: any) {
-      setSettleMsg(`Settlement error: ${err.message}`);
-    }
-  };
-
   const codeSnippets = {
-    typescript: `import { ComputlessFPIClient } from '@computless/fpi-sdk';
+    typescript: `// TARGET: '@computless/fpi-sdk' is a planned client; it is not published.
+import { ComputlessFPIClient } from '@computless/fpi-sdk';
 
 // Initialize Federation Provider Interface client
 const fpi = new ComputlessFPIClient({
-  endpoint: 'https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.app',
+  endpoint: 'http://localhost:3000',
   cappoGrantToken: 'cappo-grant-alpha-001',
 });
 
@@ -370,7 +358,7 @@ const lease = await fpi.resources.allocate({
   allocationType: 'reserved',
   leaseDurationMinutes: 120,
 });
-console.log('Active Lease:', lease.allocation.id, lease.allocation.x402TotalLeaseCostVEK);
+console.log('Lease record:', lease.allocation.id);
 
 // 3. Dispatch Federated Execution Workload
 const job = await fpi.execution.dispatch({
@@ -378,12 +366,13 @@ const job = await fpi.execution.dispatch({
   payload: { model: 'Llama3-Substrate', task: 'autonomous_audit' },
   forceFallbackIfUnreachable: true,
 });
-console.log('Execution Status:', job.status, 'PGL Proof:', job.pglProofSignature);`,
+console.log('Job record:', job.status); // DEMO: no provider is contacted`,
 
-    python: `from computless_fpi import FPIGateway, CAPPOConfig
+    python: `# TARGET: 'computless_fpi' is a planned client; it is not published.
+from computless_fpi import FPIGateway, CAPPOConfig
 
 fpi = FPIGateway(
-    host="https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.app",
+    host="http://localhost:3000",
     cappo_grant_id="cappo-grant-alpha-001"
 )
 
@@ -391,35 +380,35 @@ fpi = FPIGateway(
 provider = fpi.register_provider(
     provider_name="Sovereign Edge GPU Node",
     provider_type="sovereign_enclave",
-    endpoint_url="https://edge-gpu.sovereign.cloud/v1",
+    endpoint_url="https://provider.example/v1",
     regions=["us-west-2", "eu-central-1"],
     price_per_compute_unit_vek=0.0008,
     is_sovereign_enclave=True
 )
 
-# 2. Dispatch Workload with Automated x402 Gas Metering
+# 2. Dispatch a workload (DEMO: recorded locally, not dispatched)
 result = fpi.execute_job(
     provider_id=provider["id"],
     capability_id="cap-compute-v1",
     payload={"action": "run_inference", "batch_size": 32}
 )
 
-print(f"Executed in {result['executionTimeMs']}ms. PGL Hash: {result['pglProofSignature']}")`,
+print(result["job"]["status"])`,
 
     curl: `# 1. Register Federation Provider
-curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.app/api/fpi/providers/register \\
+curl -X POST http://localhost:3000/api/fpi/providers/register \\
   -H "Content-Type: application/json" \\
   -d '{
-    "providerName": "Equinix Metal Edge",
+    "providerName": "Example Edge Provider",
     "providerType": "edge_telecom",
-    "endpointUrl": "https://fpi.equinix.computless.org/v1",
+    "endpointUrl": "https://provider.example/v1",
     "regions": ["us-west-2"],
     "pricePerComputeUnitVEK": 0.0005,
     "maxLatencyMs": 10
   }'
 
 # 2. Query Matchmaker Discovery
-curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.app/api/fpi/discovery \\
+curl -X POST http://localhost:3000/api/fpi/discovery \\
   -H "Content-Type: application/json" \\
   -d '{
     "capabilityId": "cap-compute-v1",
@@ -428,10 +417,10 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
   }'
 
 # 3. Dispatch Federated Execution
-curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.app/api/fpi/execute \\
+curl -X POST http://localhost:3000/api/fpi/execute \\
   -H "Content-Type: application/json" \\
   -d '{
-    "providerId": "fpi-provider-aws-sovereign",
+    "providerId": "<provider id from /api/fpi/providers>",
     "capabilityId": "cap-compute-v1",
     "cappoGrantId": "cappo-grant-alpha-001",
     "payload": { "task": "benchmark" }
@@ -441,18 +430,18 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
       {
         openapi: '3.0.3',
         info: {
-          title: 'Computeless Cloud Federation Provider Interface (FPI)',
-          version: '1.0.0-FPI-SPEC',
+          title: 'COMPUTLESS Federation Provider Interface (FPI) — prototype',
+          version: '0.1.0-prototype',
           description:
-            'Open standard protocol interface for federated cloud providers, sovereign enclaves, and decentralized edge swarms.',
+            'Prototype interface for federated providers. Provider, job and billing records are local; no provider is contacted and no settlement is implemented.',
         },
         paths: {
           '/api/fpi/providers': { get: { summary: 'List Federation Providers' } },
           '/api/fpi/providers/register': { post: { summary: 'Register External Provider' } },
           '/api/fpi/discovery': { post: { summary: 'HRMR Service Discovery Matchmaker' } },
           '/api/fpi/resources/allocate': { post: { summary: 'Lease Compute Resource Quota' } },
-          '/api/fpi/execute': { post: { summary: 'Dispatch Workload with CAPPO & x402 Settlement' } },
-          '/api/fpi/billing': { get: { summary: 'x402 Payout Ledger & Settlements' } },
+          '/api/fpi/execute': { post: { summary: 'Record a federated job (DEMO; not dispatched)' } },
+          '/api/fpi/billing': { get: { summary: 'Billing records (unsettled; settlement not implemented)' } },
         },
       },
       null,
@@ -467,9 +456,8 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
   };
 
   // Metrics summary
-  const activeProvidersCount = providers.filter((p) => p.status === 'active').length;
-  const totalAllocatedCompute = providers.reduce((acc, p) => acc + p.quota.totalAllocatedUnits, 0);
-  const totalx402Earned = settlements.reduce((acc, s) => acc + s.totalx402EarnedVEK, 0);
+  const totalAllocatedCompute = providers.reduce((acc, p) => acc + (Number(p.quota?.totalAllocatedUnits) || 0), 0);
+  const totalx402Recorded = settlements.reduce((acc, s) => acc + (Number(s.totalx402EarnedVEK) || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -485,12 +473,10 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               <div>
                 <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                   Federation Provider Interface (FPI)
-                  <span className="px-2.5 py-0.5 text-xs font-mono font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    Open Protocol v1.0
-                  </span>
+                  <EvidenceBadge label="TARGET" title="FPI federation is a target design" />
                 </h1>
                 <p className="text-sm text-slate-400 mt-0.5">
-                  Universal specification &amp; runtime harness for external cloud providers, sovereign enclaves, and edge swarms.
+                  Prototype specification and local records for federating external providers. No external provider is contacted.
                 </p>
               </div>
             </div>
@@ -500,24 +486,24 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
             <div className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 flex items-center space-x-2">
               <Server className="h-4 w-4 text-sky-400" />
               <div>
-                <span className="text-slate-500 block text-[10px] uppercase">Active Providers</span>
-                <span className="text-white font-bold text-sm">{activeProvidersCount} / {providers.length}</span>
+                <span className="text-slate-500 block text-[10px] uppercase">Provider records</span>
+                <span className="text-white font-bold text-sm">{providers.length}</span>
               </div>
             </div>
 
             <div className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 flex items-center space-x-2">
               <Cpu className="h-4 w-4 text-indigo-400" />
               <div>
-                <span className="text-slate-500 block text-[10px] uppercase">Leased Compute</span>
-                <span className="text-indigo-300 font-bold text-sm">{totalAllocatedCompute} Units</span>
+                <span className="text-slate-500 block text-[10px] uppercase">Recorded lease units</span>
+                <span className="text-indigo-300 font-bold text-sm">{totalAllocatedCompute} (records)</span>
               </div>
             </div>
 
             <div className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 flex items-center space-x-2">
               <Coins className="h-4 w-4 text-amber-400" />
               <div>
-                <span className="text-slate-500 block text-[10px] uppercase">x402 Gas Metered</span>
-                <span className="text-amber-300 font-bold text-sm">{totalx402Earned.toFixed(2)} VEK</span>
+                <span className="text-slate-500 block text-[10px] uppercase">Billing records (unsettled)</span>
+                <span className="text-amber-300 font-bold text-sm">{totalx402Recorded.toFixed(2)} VEK</span>
               </div>
             </div>
 
@@ -529,6 +515,13 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
+        </div>
+
+        <div className="mt-4 relative z-10">
+          <DemoDataNote>
+            Provider, allocation, job and billing rows are sample data (DEMO) or records created on this server (UNVERIFIED). No
+            provider endpoint is contacted, nothing is dispatched, and no settlement exists. Provider names are illustrative.
+          </DemoDataNote>
         </div>
 
         {/* FPI Navigation Tabs */}
@@ -614,7 +607,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
             }`}
           >
             <Coins className="h-3.5 w-3.5" />
-            <span>Billing &amp; x402 Settlements</span>
+            <span>Billing records</span>
           </button>
 
           <button
@@ -641,7 +634,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               </div>
               <h3 className="text-base font-bold text-white mb-2">1. Service Discovery Protocol</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                External providers register endpoint URLs, geographical regions, hardware attestation capabilities, max latency SLAs, and unit pricing. Computeless Cloud’s HRMR matchmaker dynamically filters and orders providers based on caller constraints.
+                Providers register endpoint URLs, regions, a sovereignty flag, a latency target and unit pricing. The HRMR matchmaker filters and orders the provider records by the caller's constraints.
               </p>
             </div>
 
@@ -659,9 +652,11 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               <div className="h-10 w-10 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mb-4">
                 <Coins className="h-5 w-5" />
               </div>
-              <h3 className="text-base font-bold text-white mb-2">3. x402 Metering &amp; Payout Settlement</h3>
+              <h3 className="text-base font-bold text-white mb-2 flex items-center gap-2">
+                3. x402 metering &amp; payout <EvidenceBadge label="TARGET" />
+              </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Leverages HTTP 402 micro-gas payments for pay-per-execution execution. Every task execution produces a cryptographic Proof Graph Ledger (PGL) hash, guaranteeing transparent provider payouts in VEK tokens.
+                Planned: HTTP 402 pay-per-execution metering with provider payouts. Not implemented — billing rows here are unsettled records and nothing is paid.
               </p>
             </div>
           </div>
@@ -670,8 +665,13 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Layers className="h-5 w-5 text-indigo-400" />
-              Federation Provider Interface (FPI) Architectural Protocol Specification
+              FPI protocol specification
+              <EvidenceBadge label="TARGET" />
             </h2>
+            <p className="text-xs text-slate-400">
+              The endpoints below exist in this prototype, but they only read and write local records. The behaviour described is the
+              target design.
+            </p>
 
             <div className="space-y-4">
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
@@ -684,7 +684,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   </span>
                 </div>
                 <p className="text-xs text-slate-300">
-                  Providers present cryptographic identity keys, endpoint base URIs, and capabilities list. Registration generates a unique Provider ID and issuing auth key hash. Status heartbeats (<code className="text-sky-300 font-mono">POST /api/fpi/providers/:id/status</code>) periodically update latency metrics and availability.
+                  Providers present an identity, endpoint base URI and capability list. Registration creates a provider record that stays UNVERIFIED until it sends a status heartbeat (<code className="text-sky-300 font-mono">POST /api/fpi/providers/:id/status</code>). The server does not contact the provider itself.
                 </p>
               </div>
 
@@ -726,21 +726,21 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   </span>
                 </div>
                 <p className="text-xs text-slate-300">
-                  Workloads are dispatched alongside CAPPO Grant signatures. Invariant 1 enforces terminal 403 denial if authority is invalid. Invariant 2 triggers transparent fallback rerouting to alternative registered federation providers if the target provider endpoint yields HTTP 503 infrastructure failure.
+                  Target: workloads are dispatched with an authority decision; 403 is terminal, a provider 503 reroutes to another provider. Today the endpoint only records a job locally — it does not call the provider.
                 </p>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-mono font-bold text-purple-400 uppercase">
-                    Protocol Module E: Billing Ledger &amp; Payout Settlement
+                    Protocol Module E: Billing &amp; payout (TARGET)
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
                     GET /api/fpi/billing
                   </span>
                 </div>
                 <p className="text-xs text-slate-300">
-                  Execution micro-gas is accumulated per provider per epoch. Payouts are verified against PGL cryptographic execution receipts and settled via x402 token transfer transactions.
+                  Target: usage accumulates per provider per epoch and is paid out against execution evidence. Not implemented — there is no payout, no transaction and no verification against PGL.
                 </p>
               </div>
             </div>
@@ -906,7 +906,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   Defined one URI with multiple variant realizations selected dynamically via feature tags, latency constraints, and quality factors.
                 </p>
                 <div className="p-2.5 rounded bg-slate-900 border border-slate-800 font-mono text-[11px] text-slate-400">
-                  <span className="text-emerald-400">Computless Application:</span> HRMR Matchmaker maps 1 capability ID to multiple federated cloud, enclave, or edge providers based on cost, latency, &amp; sovereignty.
+                  <span className="text-emerald-400">Computless Application:</span> HRMR Matchmaker maps 1 capability ID to multiple federated cloud or edge providers based on cost, latency, &amp; sovereignty.
                 </div>
               </div>
 
@@ -944,7 +944,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   REST defined intermediaries as first-class components enforcing security, transaction accounting, and legacy encapsulation across trust boundaries.
                 </p>
                 <div className="p-2.5 rounded bg-slate-900 border border-slate-800 font-mono text-[11px] text-slate-400">
-                  <span className="text-emerald-400">Computless Application:</span> Edge proxies act as authority gateways and proof loggers between autonomous agents and multi-cloud execution enclaves.
+                  <span className="text-emerald-400">Computless Application:</span> Edge proxies act as authority gateways and proof loggers between autonomous agents and multi-cloud execution environments (target design).
                 </div>
               </div>
 
@@ -997,7 +997,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
 
               <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-center space-y-1.5">
                 <span className="text-[10px] font-mono text-purple-400 uppercase font-bold block">4. Execution</span>
-                <span className="text-xs font-bold text-white block">Stateless Enclave</span>
+                <span className="text-xs font-bold text-white block">Stateless worker</span>
                 <span className="text-[10px] text-slate-400 block font-mono">RFC 7240 respond-async processing</span>
               </div>
 
@@ -1010,7 +1010,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-center space-y-1.5">
                 <span className="text-[10px] font-mono text-amber-300 uppercase font-bold block">6. Settlement</span>
                 <span className="text-xs font-bold text-white block">x402 Micro-Gas</span>
-                <span className="text-[10px] text-slate-400 block font-mono">Pay-per-execution token payout</span>
+                <span className="text-[10px] text-slate-400 block font-mono">Pay-per-execution payout (TARGET, not implemented)</span>
               </div>
             </div>
           </div>
@@ -1023,7 +1023,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Server className="h-5 w-5 text-sky-400" />
-              Registered Federation Providers
+              Provider records
             </h2>
 
             <button
@@ -1031,7 +1031,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center space-x-2 transition cursor-pointer shadow-lg shadow-indigo-600/20"
             >
               <PlusCircle className="h-4 w-4" />
-              <span>Register New External Provider</span>
+              <span>Add provider record</span>
             </button>
           </div>
 
@@ -1057,7 +1057,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     required
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
-                    placeholder="e.g. Oracle Sovereign Enclave"
+                    placeholder="e.g. Example Sovereign Provider"
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -1069,8 +1069,8 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     onChange={(e: any) => setRegType(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="hyperscaler">Hyperscaler Cloud</option>
-                    <option value="sovereign_enclave">Sovereign Enclave</option>
+                    <option value="hyperscaler">Large public cloud</option>
+                    <option value="sovereign_enclave">Sovereign provider</option>
                     <option value="decentralized_mesh">Decentralized Mesh Swarm</option>
                     <option value="edge_telecom">Edge Telecom Baremetal</option>
                   </select>
@@ -1099,7 +1099,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1">Max Latency SLA (ms)</label>
+                  <label className="block text-slate-400 mb-1">Declared latency target (ms)</label>
                   <input
                     type="number"
                     value={regLatency}
@@ -1129,7 +1129,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-indigo-500"
                 />
                 <label htmlFor="regSovereign" className="text-xs text-slate-300">
-                  Is Hardware Attested Sovereign Enclave (National Isolation)
+                  Mark as sovereign (declared flag, not attested)
                 </label>
               </div>
 
@@ -1145,7 +1145,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   type="submit"
                   className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 text-xs font-semibold cursor-pointer shadow-md"
                 >
-                  Submit Registration
+                  Save provider record
                 </button>
               </div>
             </form>
@@ -1153,8 +1153,13 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
 
           {/* Provider Directory Table */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {providers.length === 0 && (
+              <div className="p-4 rounded-xl border border-slate-800 bg-slate-900 text-xs font-mono text-slate-400">No provider records loaded.</div>
+            )}
             {providers.map((p) => {
-              const capacityPct = Math.round((p.quota.usedUnits / p.quota.maxCapacityUnits) * 100);
+              const used = Number(p.quota?.usedUnits);
+              const max = Number(p.quota?.maxCapacityUnits);
+              const capacityPct = Number.isFinite(used) && Number.isFinite(max) && max > 0 ? Math.round((used / max) * 100) : 0;
               return (
                 <div
                   key={p.id}
@@ -1164,46 +1169,46 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     <div>
                       <div className="flex items-center space-x-2">
                         <h3 className="text-sm font-bold text-white">{p.providerName}</h3>
+                        <RecordBadge record={p} fallback="DEMO" />
                         {p.isSovereignEnclave && (
-                          <span className="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            Sovereign Enclave
+                          <span className="px-2 py-0.5 text-[10px] font-mono rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                            sovereign (declared)
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-slate-500 font-mono mt-0.5">{p.endpointUrl}</p>
+                      <p className="text-xs text-slate-500 font-mono mt-0.5" title="Recorded endpoint; never contacted">
+                        {p.endpointUrl} <span className="text-slate-600">(not contacted)</span>
+                      </p>
                     </div>
 
                     <span
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase ${
-                        p.status === 'active'
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                      }`}
+                      className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold uppercase bg-slate-800 text-slate-300 border border-slate-700"
+                      title="Stored status; no heartbeat has been verified"
                     >
-                      {p.status}
+                      {String(p.status ?? 'unknown')}
                     </span>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 text-xs font-mono bg-slate-950 p-3 rounded-lg border border-slate-800/80">
                     <div>
                       <span className="text-slate-500 block text-[10px]">Type</span>
-                      <span className="text-slate-200 capitalize">{p.providerType.replace('_', ' ')}</span>
+                      <span className="text-slate-200">{PROVIDER_TYPE_LABELS[String(p.providerType)] ?? String(p.providerType ?? '—')}</span>
                     </div>
                     <div>
-                      <span className="text-slate-500 block text-[10px]">Latency SLA</span>
-                      <span className="text-sky-300">{p.maxLatencyMs}ms</span>
+                      <span className="text-slate-500 block text-[10px]">Declared latency</span>
+                      <span className="text-sky-300">{measured(p.maxLatencyMs, 'ms')}</span>
                     </div>
                     <div>
-                      <span className="text-slate-500 block text-[10px]">Rate</span>
-                      <span className="text-amber-300">{p.pricing.pricePerComputeUnitVEK} VEK/u</span>
+                      <span className="text-slate-500 block text-[10px]">Listed rate</span>
+                      <span className="text-amber-300">{p.pricing?.pricePerComputeUnitVEK ?? '—'} VEK/u</span>
                     </div>
                   </div>
 
                   <div>
                     <div className="flex justify-between text-xs font-mono mb-1">
-                      <span className="text-slate-400">Capacity Utilization</span>
+                      <span className="text-slate-400">Recorded capacity use</span>
                       <span className="text-slate-200">
-                        {p.quota.usedUnits} / {p.quota.maxCapacityUnits} units ({capacityPct}%)
+                        {measured(p.quota?.usedUnits)} / {measured(p.quota?.maxCapacityUnits)} units ({capacityPct}%)
                       </span>
                     </div>
                     <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden border border-slate-800">
@@ -1218,11 +1223,9 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
 
                   <div className="flex items-center justify-between pt-1 text-xs">
                     <span className="text-slate-500 font-mono text-[10px]">
-                      Regions: {p.regions.join(', ')}
+                      Regions: {(p.regions ?? []).join(', ')}
                     </span>
-                    <span className="text-slate-500 font-mono text-[10px]">
-                      SLA Uptime: {p.slaUptimePct}%
-                    </span>
+                    <span className="text-slate-500 font-mono text-[10px]">Uptime: not measured</span>
                   </div>
                 </div>
               );
@@ -1237,7 +1240,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Search className="h-5 w-5 text-indigo-400" />
-              HRMR Service Discovery Matchmaker Query
+              HRMR discovery over provider records
             </h2>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
@@ -1299,7 +1302,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-indigo-500"
                 />
                 <label htmlFor="discSovereign" className="text-xs text-slate-300">
-                  Require Sovereign Hardware Attestation
+                  Require the sovereign flag (declared, not attested)
                 </label>
               </div>
 
@@ -1322,7 +1325,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                    Matchmaker Search Results ({discResults.length} Compliant Providers Found)
+                    Matching provider records ({discResults.length})
                   </h3>
                 </div>
 
@@ -1344,21 +1347,22 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                           <div>
                             <h4 className="text-sm font-bold text-white flex items-center gap-2">
                               {p.providerName}
+                              <RecordBadge record={p} fallback="DEMO" />
                               {p.isSovereignEnclave && (
-                                <span className="px-1.5 py-0.5 text-[9px] bg-emerald-500/10 text-emerald-400 rounded font-mono border border-emerald-500/20">
-                                  Sovereign
+                                <span className="px-1.5 py-0.5 text-[9px] bg-blue-500/10 text-blue-300 rounded font-mono border border-blue-500/20">
+                                  sovereign (declared)
                                 </span>
                               )}
                             </h4>
                             <p className="text-xs text-slate-400 font-mono">
-                              Regions: {p.regions.join(', ')} • Latency: {p.maxLatencyMs}ms
+                              Regions: {(p.regions ?? []).join(', ')} • Declared latency: {measured(p.maxLatencyMs, 'ms')}
                             </p>
                           </div>
                         </div>
 
                         <div className="text-right font-mono text-xs">
-                          <div className="text-amber-300 font-bold">{p.pricing.pricePerComputeUnitVEK} VEK/unit</div>
-                          <div className="text-slate-500 text-[10px]">Uptime SLA: {p.slaUptimePct}%</div>
+                          <div className="text-amber-300 font-bold">{p.pricing?.pricePerComputeUnitVEK ?? '—'} VEK/unit</div>
+                          <div className="text-slate-500 text-[10px]">uptime: not measured</div>
                         </div>
                       </div>
                     ))}
@@ -1376,7 +1380,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Cpu className="h-5 w-5 text-indigo-400" />
-              Active Compute Resource Leases
+              Lease records
             </h2>
 
             <button
@@ -1384,7 +1388,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center space-x-2 transition cursor-pointer shadow-lg shadow-indigo-600/20"
             >
               <PlusCircle className="h-4 w-4" />
-              <span>Create Compute Lease</span>
+              <span>Add lease record</span>
             </button>
           </div>
 
@@ -1399,7 +1403,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
             <form onSubmit={handleAllocateResource} className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Cpu className="h-4 w-4 text-indigo-400" />
-                Lease Compute Capacity from Provider
+                Create a lease record (nothing is reserved)
               </h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
@@ -1412,7 +1416,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   >
                     {providers.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.providerName} ({p.pricing.pricePerComputeUnitVEK} VEK/unit)
+                        {p.providerName} ({p.pricing?.pricePerComputeUnitVEK ?? '—'} VEK/unit)
                       </option>
                     ))}
                   </select>
@@ -1475,8 +1479,8 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     onChange={(e: any) => setAllocType(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="reserved">Reserved (Guaranteed SLA)</option>
-                    <option value="spot">Spot Lease (35% Discount)</option>
+                    <option value="reserved">Reserved</option>
+                    <option value="spot">Spot</option>
                     <option value="on_demand">On-Demand</option>
                   </select>
                 </div>
@@ -1494,7 +1498,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   type="submit"
                   className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 text-xs font-semibold cursor-pointer shadow-md"
                 >
-                  Confirm &amp; Allocate
+                  Save lease record
                 </button>
               </div>
             </form>
@@ -1511,31 +1515,32 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     <th className="py-3 px-4">Subject</th>
                     <th className="py-3 px-4">Units (CPU/RAM/GPU)</th>
                     <th className="py-3 px-4">Type</th>
-                    <th className="py-3 px-4">x402 Cost</th>
+                    <th className="py-3 px-4">Listed cost</th>
                     <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {allocations.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-4 px-4 text-center text-slate-500">No lease records.</td>
+                    </tr>
+                  )}
                   {allocations.map((a) => (
                     <tr key={a.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-3 px-4 font-bold text-indigo-400">{a.id}</td>
+                      <td className="py-3 px-4 font-bold text-indigo-400">
+                        {a.id} <RecordBadge record={a} fallback="DEMO" />
+                      </td>
                       <td className="py-3 px-4 text-white font-sans">{a.providerName}</td>
                       <td className="py-3 px-4 text-slate-400">{a.granteeSubject}</td>
                       <td className="py-3 px-4 text-sky-300">
                         {a.computeUnits} vCPU / {a.memoryGb}GB / {a.gpuCores} GPU
                       </td>
                       <td className="py-3 px-4 capitalize text-slate-300">{a.allocationType}</td>
-                      <td className="py-3 px-4 text-amber-300 font-bold">{a.x402TotalLeaseCostVEK} VEK</td>
+                      <td className="py-3 px-4 text-amber-300">{a.x402TotalLeaseCostVEK ?? '—'} VEK (not charged)</td>
                       <td className="py-3 px-4">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            a.status === 'active'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-slate-800 text-slate-500'
-                          }`}
-                        >
-                          {a.status}
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 text-slate-300">
+                          {(a as any).expiresAt && new Date((a as any).expiresAt).getTime() < Date.now() ? 'expired' : String(a.status ?? 'unknown')}
                         </span>
                       </td>
                       <td className="py-3 px-4 text-right">
@@ -1544,7 +1549,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                             onClick={() => handleDeallocate(a.id)}
                             className="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-[10px] cursor-pointer transition"
                           >
-                            Release Lease
+                            Release record
                           </button>
                         )}
                       </td>
@@ -1563,12 +1568,16 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Zap className="h-5 w-5 text-amber-400" />
-              Dispatch Federated Execution Workload
+              Federated job (DEMO — not dispatched)
             </h2>
+            <p className="text-xs text-slate-400">
+              Records a job against a provider record. No HTTP call is made to the provider and no workload runs; for real execution use
+              the 8-Layer Pipeline, Amplification Ladder sandbox or Runtime Substrate tabs.
+            </p>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
               <div>
-                <label className="block text-slate-400 mb-1">Target Federation Provider</label>
+                <label className="block text-slate-400 mb-1">Provider record</label>
                 <select
                   value={execProviderId}
                   onChange={(e) => setExecProviderId(e.target.value)}
@@ -1598,7 +1607,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">CAPPO Grant Token</label>
+                <label className="block text-slate-400 mb-1">Local grant id (not CAPPO)</label>
                 <input
                   type="text"
                   value={execGrantId}
@@ -1628,7 +1637,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                   className="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-indigo-500"
                 />
                 <label htmlFor="execFallback" className="text-xs text-amber-300">
-                  Simulate Provider HTTP 503 Outage (Triggers HRMR Fallback Rerouting)
+                  Simulate a provider 503 (reroutes to another provider record)
                 </label>
               </div>
 
@@ -1639,7 +1648,7 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                 className="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-indigo-600/20"
               >
                 <Play className="h-4 w-4 fill-current" />
-                <span>{isExecuting ? 'Dispatching Workload...' : 'Dispatch Execution Workload'}</span>
+                <span>{isExecuting ? 'Recording...' : 'Record DEMO job'}</span>
               </button>
             </div>
 
@@ -1648,14 +1657,21 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
               <div className="space-y-4 border-t border-slate-800 pt-4">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Terminal className="h-4 w-4 text-indigo-400" />
-                  Execution Result &amp; Cryptographic PGL Proof
+                  Job record
+                  <EvidenceBadge label={execResult.job?.evidenceLabel ?? execResult.evidenceLabel} fallback="DEMO" />
                 </h3>
+
+                {(execResult.error || (hasNumber(execResult.httpStatus) && execResult.httpStatus >= 400)) && (
+                  <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">
+                    HTTP {execResult.httpStatus ?? '?'}: {execResult.title ?? ''} {execResult.detail ?? execResult.error ?? ''}
+                  </div>
+                )}
 
                 <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs space-y-2">
                   <div className="flex items-center justify-between text-slate-400 border-b border-slate-800/80 pb-2">
-                    <span>Job ID: <strong className="text-indigo-400">{execResult.job?.id}</strong></span>
-                    <span>Status: <strong className="text-emerald-400">{execResult.job?.status}</strong></span>
-                    <span>x402 Gas Settled: <strong className="text-amber-300">{execResult.job?.x402GasSettled} VEK</strong></span>
+                    <span>Job ID: <strong className="text-indigo-400">{execResult.job?.id ?? '—'}</strong></span>
+                    <span>Status: <strong className="text-slate-200">{execResult.job?.status ?? '—'}</strong></span>
+                    <span>Settlement: <strong className="text-slate-400">not implemented</strong></span>
                   </div>
 
                   <p className="text-slate-200">{execResult.job?.outputSummary}</p>
@@ -1676,8 +1692,8 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
           {/* Historical Execution Jobs Log */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-white">Federated Execution History</h3>
-              <span className="text-xs text-slate-400 font-mono">{jobs.length} Executed Jobs</span>
+              <h3 className="text-sm font-bold text-white">Job records</h3>
+              <span className="text-xs text-slate-400 font-mono">{jobs.length} records (none dispatched)</span>
             </div>
 
             <div className="overflow-x-auto">
@@ -1688,23 +1704,30 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
                     <th className="py-3 px-4">Provider</th>
                     <th className="py-3 px-4">Capability</th>
                     <th className="py-3 px-4">Time (ms)</th>
-                    <th className="py-3 px-4">x402 Gas</th>
-                    <th className="py-3 px-4">PGL Proof Signature</th>
+                    <th className="py-3 px-4">Listed gas</th>
+                    <th className="py-3 px-4">Local signature</th>
                     <th className="py-3 px-4">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {jobs.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-4 px-4 text-center text-slate-500">No job records.</td>
+                    </tr>
+                  )}
                   {jobs.map((j) => (
                     <tr key={j.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-3 px-4 font-bold text-indigo-400">{j.id}</td>
+                      <td className="py-3 px-4 font-bold text-indigo-400">
+                        {j.id} <RecordBadge record={j} fallback="DEMO" />
+                      </td>
                       <td className="py-3 px-4 text-white font-sans">{j.providerName}</td>
                       <td className="py-3 px-4 text-slate-400">{j.capabilityId}</td>
-                      <td className="py-3 px-4 text-sky-300">{j.executionTimeMs}ms</td>
-                      <td className="py-3 px-4 text-amber-300 font-bold">{j.x402GasSettled} VEK</td>
+                      <td className="py-3 px-4 text-sky-300">{measured((j as any).executionTimeMs, 'ms')}</td>
+                      <td className="py-3 px-4 text-amber-300">{(j as any).x402GasSettled ?? '—'}{(j as any).x402GasSettled != null ? ' VEK (unsettled)' : ''}</td>
                       <td className="py-3 px-4 text-slate-400 truncate max-w-[150px]">{j.pglProofSignature}</td>
                       <td className="py-3 px-4">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase">
-                          {j.status}
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 uppercase">
+                          {String(j.status ?? 'unknown')}
                         </span>
                       </td>
                     </tr>
@@ -1716,268 +1739,111 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
         </div>
       )}
 
-      {/* SUB-TAB 6: BILLING & X402 SETTLEMENTS */}
+      {/* SUB-TAB 6: BILLING RECORDS (no settlement exists) */}
       {activeSubTab === 'billing' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <Coins className="h-5 w-5 text-amber-400" />
-                x402 Provider Billing &amp; Micro-Gas Settlements
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Real-time economic finality tracking, aggregate provider payouts, and instant x402 gas settlement verification.
-              </p>
-            </div>
-
-            <button
-              onClick={() => handleSettleBilling()}
-              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center space-x-2 transition cursor-pointer shadow-lg shadow-amber-500/20"
-            >
-              <Coins className="h-4 w-4" />
-              <span>Settle All Outstanding Payouts</span>
-            </button>
+          <div>
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <Coins className="h-5 w-5 text-amber-400" />
+              Billing records
+              <EvidenceBadge label="DEMO" />
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Usage totals recorded per provider. Settlement is not implemented: nothing has been paid, there are no payout
+              transactions, and these amounts are not owed to anyone.
+            </p>
           </div>
 
-          {settleMsg && (
-            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
-              {settleMsg}
-            </div>
-          )}
-
-          {/* AGGREGATE FINALITY KPI CARDS */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono text-slate-400 uppercase">Total Settled Revenue</span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  FINALIZED
-                </span>
-              </div>
-              <div className="text-xl font-bold font-mono text-emerald-400">
-                {globalTotalSettledVEK.toFixed(4)} <span className="text-xs text-emerald-300 font-normal">VEK</span>
-              </div>
-              <p className="text-[10px] text-slate-400">Cryptographically settled via x402 gas</p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono text-slate-400 uppercase">Pending Epoch Payouts</span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  PENDING
-                </span>
-              </div>
-              <div className="text-xl font-bold font-mono text-amber-300">
-                {globalTotalPendingVEK.toFixed(4)} <span className="text-xs text-amber-200 font-normal">VEK</span>
-              </div>
-              <p className="text-[10px] text-slate-400">Awaiting batch finality trigger</p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono text-slate-400 uppercase">Economic Finality Rate</span>
-                <span className="text-xs font-mono font-bold text-sky-400">{globalFinalityRate}%</span>
-              </div>
-              <div className="text-xl font-bold font-mono text-white">
-                {globalFinalityRate}%
-              </div>
-              <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-2">
-                <div
-                  className="bg-emerald-400 h-full transition-all duration-500"
-                  style={{ width: `${globalFinalityRate}%` }}
-                />
+              <span className="text-[11px] font-mono text-slate-400 uppercase">Recorded usage total</span>
+              <div className="text-xl font-bold font-mono text-slate-200">
+                {globalGrandTotalVEK.toFixed(4)} <span className="text-xs text-slate-400 font-normal">VEK (unsettled)</span>
               </div>
             </div>
-
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono text-slate-400 uppercase">Provider Nodes</span>
-                <ShieldCheck className="h-4 w-4 text-indigo-400" />
-              </div>
-              <div className="text-xl font-bold font-mono text-white">
-                {providerSummaryMap.length} <span className="text-xs text-slate-400 font-normal">Invoiced</span>
-              </div>
-              <p className="text-[10px] text-slate-400">Active x402 metering participants</p>
+              <span className="text-[11px] font-mono text-slate-400 uppercase">Settlement</span>
+              <div className="text-xl font-bold font-mono text-slate-400">not implemented</div>
+              <p className="text-[10px] text-slate-500">Settlement is not implemented.</p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+              <span className="text-[11px] font-mono text-slate-400 uppercase">Providers with records</span>
+              <div className="text-xl font-bold font-mono text-white">{providerSummaryMap.length}</div>
             </div>
           </div>
 
-          {/* SUMMARY PANEL: AGGREGATE SETTLEMENT TOTALS BY PROVIDER */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  <Coins className="h-4 w-4 text-amber-400" />
-                  Aggregate Settlement Finality by Provider
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Per-provider settlement breakdown showing total earned gas, finalized payouts, and immediate execution finality triggers.
-                </p>
-              </div>
-              <span className="text-xs font-mono text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2.5 py-1 rounded-md hidden sm:inline-block">
-                x402 Gas Engine Active
-              </span>
-            </div>
-
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Coins className="h-4 w-4 text-amber-400" />
+              Recorded usage by provider
+            </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {providerSummaryMap.map((prov) => {
-                const finalityPct =
-                  prov.totalVEK > 0
-                    ? ((prov.settledVEK / prov.totalVEK) * 100).toFixed(1)
-                    : '100.0';
-                const isFullySettled = prov.pendingVEK === 0;
-
-                return (
-                  <div
-                    key={prov.providerId}
-                    className="p-5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition space-y-4"
-                  >
-                    {/* Header */}
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                          {prov.providerName}
-                        </h4>
-                        <span className="text-[10px] font-mono text-slate-400 block mt-0.5">
-                          ID: {prov.providerId}
-                        </span>
-                      </div>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
-                          isFullySettled
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                        }`}
-                      >
-                        {isFullySettled ? '100% Finalized' : 'Pending Epoch Payout'}
-                      </span>
+              {providerSummaryMap.map((prov) => (
+                <div key={prov.providerId} className="p-5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h4 className="text-sm font-bold text-white">{prov.providerName}</h4>
+                      <span className="text-[10px] font-mono text-slate-400 block mt-0.5">ID: {prov.providerId}</span>
                     </div>
-
-                    {/* Financial Metrics */}
-                    <div className="grid grid-cols-3 gap-2 p-3 rounded-lg bg-slate-900 border border-slate-800 text-center font-mono text-xs">
-                      <div>
-                        <span className="text-[10px] text-slate-400 block uppercase">Settled</span>
-                        <span className="font-bold text-emerald-400">
-                          {prov.settledVEK.toFixed(2)} VEK
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block uppercase">Pending</span>
-                        <span className="font-bold text-amber-300">
-                          {prov.pendingVEK.toFixed(2)} VEK
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block uppercase">Total Earned</span>
-                        <span className="font-bold text-white">
-                          {prov.totalVEK.toFixed(2)} VEK
-                        </span>
-                      </div>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-slate-800 text-slate-300">
+                      unsettled
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 p-3 rounded-lg bg-slate-900 border border-slate-800 text-center font-mono text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase">Recorded</span>
+                      <span className="font-bold text-slate-200">{prov.totalVEK.toFixed(2)} VEK</span>
                     </div>
-
-                    {/* Execution & Compute Volume */}
-                    <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
-                      <span>Jobs: <strong className="text-sky-300">{prov.jobsExecuted.toLocaleString()}</strong></span>
-                      <span>Compute: <strong className="text-slate-200">{prov.computeUnitsUsed.toLocaleString()} vCPU-hrs</strong></span>
-                      <span>Epochs: <strong className="text-slate-200">{prov.settledCount + prov.pendingCount}</strong></span>
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase">Jobs (recorded)</span>
+                      <span className="font-bold text-slate-200">{prov.jobsExecuted.toLocaleString()}</span>
                     </div>
-
-                    {/* Finality Progress Bar */}
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[10px] font-mono text-slate-400">
-                        <span>Economic Finality Ratio</span>
-                        <span className={isFullySettled ? 'text-emerald-400 font-bold' : 'text-amber-300'}>
-                          {finalityPct}% Finalized
-                        </span>
-                      </div>
-                      <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-800">
-                        <div
-                          className={`h-full transition-all duration-500 ${
-                            isFullySettled ? 'bg-emerald-400' : 'bg-gradient-to-r from-emerald-400 to-amber-400'
-                          }`}
-                          style={{ width: `${finalityPct}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Footer Actions & Latest Tx */}
-                    <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                      <div className="text-[11px] font-mono text-slate-400 truncate max-w-[200px]">
-                        {prov.latestTxHash ? (
-                          <span title={prov.latestTxHash}>
-                            Tx: <code className="text-slate-300">{prov.latestTxHash.slice(0, 10)}...{prov.latestTxHash.slice(-6)}</code>
-                          </span>
-                        ) : (
-                          <span className="italic text-slate-500">No settled tx yet</span>
-                        )}
-                      </div>
-
-                      {prov.pendingVEK > 0 ? (
-                        <button
-                          onClick={() => handleSettleBilling(prov.pendingSettlementIds[0])}
-                          className="px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer transition shadow-md shadow-amber-500/10 flex items-center space-x-1"
-                        >
-                          <Coins className="h-3 w-3" />
-                          <span>Settle Payout ({prov.pendingVEK.toFixed(2)} VEK)</span>
-                        </button>
-                      ) : (
-                        <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1 font-bold">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Finality Verified
-                        </span>
-                      )}
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase">Records</span>
+                      <span className="font-bold text-slate-200">{prov.settledCount + prov.pendingCount}</span>
                     </div>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* DETAILED SETTLEMENT LEDGER TABLE */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg space-y-2 p-4">
-            <h3 className="text-sm font-bold text-white px-2 pt-2">Detailed Historical Settlement Ledger</h3>
+            <h3 className="text-sm font-bold text-white px-2 pt-2">Billing record table</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs font-mono">
                 <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 uppercase text-[10px]">
                   <tr>
-                    <th className="py-3 px-4">Settlement ID</th>
+                    <th className="py-3 px-4">Record ID</th>
                     <th className="py-3 px-4">Provider</th>
-                    <th className="py-3 px-4">Billing Period</th>
-                    <th className="py-3 px-4">Jobs Executed</th>
-                    <th className="py-3 px-4">x402 VEK Earned</th>
-                    <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4">Payout Transaction Hash</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
+                    <th className="py-3 px-4">Period</th>
+                    <th className="py-3 px-4">Jobs (recorded)</th>
+                    <th className="py-3 px-4">Amount (VEK)</th>
+                    <th className="py-3 px-4">Payout</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {settlements.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="py-4 px-4 text-center text-slate-500">No billing records.</td>
+                    </tr>
+                  )}
                   {settlements.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-3 px-4 font-bold text-indigo-400">{s.id}</td>
+                      <td className="py-3 px-4 font-bold text-indigo-400">
+                        {s.id} <RecordBadge record={s} fallback="DEMO" />
+                      </td>
                       <td className="py-3 px-4 text-white font-sans">{s.providerName}</td>
                       <td className="py-3 px-4 text-slate-400">{s.period}</td>
-                      <td className="py-3 px-4 text-sky-300">{s.jobsExecuted}</td>
-                      <td className="py-3 px-4 text-amber-300 font-bold">{s.totalx402EarnedVEK} VEK</td>
+                      <td className="py-3 px-4 text-sky-300">{measured(s.jobsExecuted)}</td>
+                      <td className="py-3 px-4 text-amber-300">{measured(s.totalx402EarnedVEK)}</td>
                       <td className="py-3 px-4">
                         <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            s.payoutStatus === 'settled'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                          }`}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 text-slate-300"
+                          title="No settlement is implemented; no payout transaction exists"
                         >
-                          {s.payoutStatus}
+                          {String(s.payoutStatus) === 'settled' ? 'unsettled' : String(s.payoutStatus ?? 'unsettled').replace('_', ' ')}
                         </span>
-                      </td>
-                      <td className="py-3 px-4 text-slate-400 truncate max-w-[180px]">{s.payoutTxHash}</td>
-                      <td className="py-3 px-4 text-right">
-                        {s.payoutStatus === 'pending' && (
-                          <button
-                            onClick={() => handleSettleBilling(s.id)}
-                            className="px-2.5 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-[10px] cursor-pointer transition font-bold"
-                          >
-                            Settle Now
-                          </button>
-                        )}
                       </td>
                     </tr>
                   ))}
@@ -1995,7 +1861,8 @@ curl -X POST https://ais-dev-tl2yeqtvmcgg2ynzx5y3a5-803186795055.us-east1.run.ap
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 <Terminal className="h-5 w-5 text-indigo-400" />
-                FPI OpenAPI Specification &amp; Client SDK Examples
+                FPI OpenAPI &amp; client examples
+                <EvidenceBadge label="TARGET" title="The SDK packages are planned, not published" />
               </h2>
 
               <div className="flex items-center space-x-2">

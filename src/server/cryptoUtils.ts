@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { runInChildSandbox } from './sandbox.js';
+import { runInChildSandbox, SANDBOX_BOUNDARY } from './sandbox.js';
 import {
   AuthorizationReceipt,
   ActionEvidenceRecord,
@@ -17,13 +17,24 @@ import {
   CanonicalExecutionAuthority,
 } from '../types.js';
 
-// Secret key for HMAC signing - initialized securely from environment or ephemeral runtime randomness
-const SUBSTRATE_CRYPTO_SECRET = process.env.SUBSTRATE_CRYPTO_SECRET || crypto.randomBytes(32).toString('hex');
+// Local HMAC key. From SUBSTRATE_CRYPTO_SECRET if set, otherwise random per
+// process: then every restart makes previously signed local records unverifiable.
+const CONFIGURED_SECRET = process.env.SUBSTRATE_CRYPTO_SECRET?.trim() || null;
+const SUBSTRATE_CRYPTO_SECRET = CONFIGURED_SECRET || crypto.randomBytes(32).toString('hex');
 
-let globalMonotonicCounter = 1000;
-export function getNextMonotonicCounter(): number {
-  globalMonotonicCounter += 1;
-  return globalMonotonicCounter;
+/** What every local signature in this module is (and is not). */
+export const LOCAL_SIGNATURE_SCOPE =
+  "Local HMAC-SHA256 with COMPUTLESS's own secret. Not CAPPO authority and not canonical PGL evidence.";
+
+export function signingKeyInfo() {
+  return {
+    algorithm: 'HMAC-SHA256' as const,
+    source: CONFIGURED_SECRET ? ('SUBSTRATE_CRYPTO_SECRET' as const) : ('ephemeral-per-process' as const),
+    persistent: Boolean(CONFIGURED_SECRET),
+    note: CONFIGURED_SECRET
+      ? 'Secret from the environment; signatures survive restarts but remain COMPUTLESS-local.'
+      : 'Random per-process secret: records signed before the last restart can no longer be verified.',
+  };
 }
 
 export interface PGLVerificationRequest {
@@ -44,9 +55,10 @@ export interface PGLVerificationResult {
   verificationTimestamp: string;
   attestationChain: {
     layer: string;
-    status: 'PASSED' | 'FAILED';
+    status: 'PASSED' | 'FAILED' | 'SKIPPED' | 'INFO';
     detail: string;
   }[];
+  scope: string;
 }
 
 /**
@@ -79,45 +91,9 @@ export function signPGLProof(txId: string, capabilityId: string, requestHash: st
   return `0x_proof_sig_${hmac.slice(0, 32)}`;
 }
 
-/**
- * Verifies that a CanonicalExecutionAuthority is cryptographically intact and within validity bounds
- */
-export function verifyCanonicalAuthority(
-  authority: CanonicalExecutionAuthority,
-  requiredCapability?: string,
-  requiredAction?: string
-): { valid: boolean; error?: string; status: number } {
-  if (!authority) {
-    return { valid: false, error: 'CanonicalExecutionAuthority missing', status: 403 };
-  }
-
-  // Check expiry
-  const now = Date.now();
-  const expiryTime = typeof authority.expiresAt === 'number' ? authority.expiresAt : new Date(authority.expiresAt).getTime();
-  if (isNaN(expiryTime) || now > expiryTime) {
-    return { valid: false, error: `Authority expired at ${new Date(expiryTime).toISOString()}`, status: 403 };
-  }
-
-  // Check capability match
-  if (requiredCapability && authority.capabilityId !== requiredCapability) {
-    return {
-      valid: false,
-      error: `Authority capability mismatch: requires '${requiredCapability}', authority grants '${authority.capabilityId}'`,
-      status: 403,
-    };
-  }
-
-  // Check action match if specified
-  if (requiredAction && authority.allowedAction && authority.allowedAction !== '*' && authority.allowedAction !== requiredAction) {
-    return {
-      valid: false,
-      error: `Authority action mismatch: requires action '${requiredAction}', authority permits '${authority.allowedAction}'`,
-      status: 403,
-    };
-  }
-
-  // Check authority digest
-  const expectedDigest = hashPayload({
+/** Unkeyed SHA-256 over a scope token's bound fields (anyone can compute it). */
+export function computeScopeTokenDigest(authority: Omit<CanonicalExecutionAuthority, 'authorityDigest' | 'expiresAt'>): string {
+  return hashPayload({
     executionId: authority.executionId,
     workspaceId: authority.workspaceId,
     mountId: authority.mountId,
@@ -125,12 +101,97 @@ export function verifyCanonicalAuthority(
     allowedAction: authority.allowedAction,
     runtimeProfile: authority.runtimeProfile,
   });
+}
 
-  if (authority.authorityDigest && authority.authorityDigest !== expectedDigest) {
-    return { valid: false, error: 'Authority digest mismatch: authority token altered or tampered', status: 403 };
+/**
+ * Builds a self-asserted execution scope token on the server. It bounds
+ * capability/action/expiry for the adapters; it is NOT authority.
+ */
+export function buildLocalScopeToken(params: {
+  capabilityId: string;
+  allowedAction?: string;
+  runtimeProfile?: CanonicalExecutionAuthority['runtimeProfile'];
+  workspaceId?: string;
+  mountId?: string;
+  ttlMs?: number;
+  source?: string;
+}): CanonicalExecutionAuthority {
+  const token = {
+    executionId: 'exec-' + crypto.randomBytes(4).toString('hex'),
+    workspaceId: params.workspaceId || 'ws-local',
+    mountId: params.mountId || 'mnt-local',
+    capabilityId: params.capabilityId,
+    allowedAction: params.allowedAction || '*',
+    runtimeProfile: params.runtimeProfile || ('CONNECTED' as const),
+  };
+  return {
+    ...token,
+    expiresAt: Date.now() + (params.ttlMs ?? 60_000),
+    authorityDigest: computeScopeTokenDigest(token),
+    canonical: false,
+    source: params.source || 'server-built scope token (not authority)',
+  };
+}
+
+export const SCOPE_TOKEN_NOTE =
+  'Scope-token check only: the digest is an unkeyed SHA-256 anyone can compute, so this is integrity of a self-asserted token, not authorization.';
+
+/**
+ * Checks a self-asserted scope token (expiry, capability/action bounds, digest
+ * integrity). Fail-closed: a missing or empty digest is rejected. This is NOT
+ * an authority check: real authority is the CAPPO decision (fabric.ts).
+ */
+export function verifyCanonicalAuthority(
+  authority: CanonicalExecutionAuthority,
+  requiredCapability?: string,
+  requiredAction?: string
+): { valid: boolean; error?: string; status: number; scope: string } {
+  const scope = SCOPE_TOKEN_NOTE;
+  if (!authority) {
+    return { valid: false, error: 'Scope token missing', status: 403, scope };
   }
 
-  return { valid: true, status: 200 };
+  // Check expiry
+  const now = Date.now();
+  const expiryTime = typeof authority.expiresAt === 'number' ? authority.expiresAt : new Date(authority.expiresAt).getTime();
+  if (isNaN(expiryTime) || now > expiryTime) {
+    return {
+      valid: false,
+      error: isNaN(expiryTime) ? 'Scope token has no valid expiry' : `Scope token expired at ${new Date(expiryTime).toISOString()}`,
+      status: 403,
+      scope,
+    };
+  }
+
+  // Check capability match
+  if (requiredCapability && authority.capabilityId !== requiredCapability) {
+    return {
+      valid: false,
+      error: `Scope capability mismatch: requires '${requiredCapability}', token covers '${authority.capabilityId}'`,
+      status: 403,
+      scope,
+    };
+  }
+
+  // Check action match if specified
+  if (requiredAction && authority.allowedAction && authority.allowedAction !== '*' && authority.allowedAction !== requiredAction) {
+    return {
+      valid: false,
+      error: `Scope action mismatch: requires action '${requiredAction}', token covers '${authority.allowedAction}'`,
+      status: 403,
+      scope,
+    };
+  }
+
+  // Digest integrity: fail closed on a missing/empty digest.
+  if (typeof authority.authorityDigest !== 'string' || authority.authorityDigest.trim() === '') {
+    return { valid: false, error: 'Scope token digest missing (fail-closed)', status: 403, scope };
+  }
+  if (authority.authorityDigest !== computeScopeTokenDigest(authority)) {
+    return { valid: false, error: 'Scope token digest mismatch: token fields were altered', status: 403, scope };
+  }
+
+  return { valid: true, status: 200, scope };
 }
 
 /**
@@ -139,8 +200,7 @@ export function verifyCanonicalAuthority(
 export function generateActionEvidence(
   params: ActionSignatureRequest,
   parentBlockHash: string = '0x0000000000000000000000000000000000000000000000000000000000000000',
-  blockHeight: number = 1,
-  realHardwareProof?: string
+  blockHeight: number = 1
 ): ActionEvidenceRecord {
   const timestamp = new Date().toISOString();
   const nonce = params.customNonce || '0x_ev_nonce_' + crypto.randomBytes(8).toString('hex');
@@ -161,7 +221,7 @@ export function generateActionEvidence(
 
   const evidenceId = 'ev-pgl-' + params.transactionId.replace('tx-', '') + '-' + crypto.randomBytes(2).toString('hex');
 
-  return {
+  const record: ActionEvidenceRecord = {
     id: evidenceId,
     timestamp,
     blockHeight,
@@ -178,9 +238,12 @@ export function generateActionEvidence(
     pglSignature,
     merkleLeafHash,
     nonce,
-    enclaveHardwareProof: realHardwareProof, // ONLY set if verified hardware proof supplied
-    verifiable: true,
+    verifiable: false,
+    evidenceLabel: 'UNVERIFIED',
+    canonical: false,
   };
+  record.verifiable = verifyActionEvidence(record).valid;
+  return record;
 }
 
 /**
@@ -213,8 +276,8 @@ export function verifyActionEvidence(
   } else {
     checkpoints.push({
       checkpoint: 'Checkpoint 1: Request Payload SHA-256 Digest',
-      status: 'PASSED',
-      description: `Verified stored request digest format: ${computedReqHash.slice(0, 18)}...`,
+      status: 'SKIPPED',
+      description: 'No original request payload supplied; the stored digest was used as-is (not checked).',
       computedValue: computedReqHash,
     });
   }
@@ -237,8 +300,8 @@ export function verifyActionEvidence(
   } else {
     checkpoints.push({
       checkpoint: 'Checkpoint 2: Response Payload SHA-256 Digest',
-      status: 'PASSED',
-      description: `Verified stored response digest format: ${computedRespHash.slice(0, 18)}...`,
+      status: 'SKIPPED',
+      description: 'No original response payload supplied; the stored digest was used as-is (not checked).',
       computedValue: computedRespHash,
     });
   }
@@ -261,21 +324,21 @@ export function verifyActionEvidence(
   const signatureMatch = providedSig === expectedSig || providedSig === legacyExpectedSig || providedSig === legacyPrefixSig;
 
   checkpoints.push({
-    checkpoint: 'Checkpoint 3: HMAC-SHA256 Non-Repudiation Signature Seal',
+    checkpoint: 'Checkpoint 3: Local HMAC-SHA256 Signature',
     status: signatureMatch ? 'PASSED' : 'FAILED',
     description: signatureMatch
-      ? 'Cryptographic signature seal verified mathematically against Substrate Secret.'
-      : 'TAMPER DETECTED: Cryptographic signature mismatch. Seal is invalid or forged.',
+      ? "Signature matches an HMAC computed now with this process's secret (local; not non-repudiation)."
+      : `Signature mismatch: forged, altered, or signed with a different secret${signingKeyInfo().persistent ? '' : ' (the secret is random per process, so records from before a restart always fail)'}.`,
     computedValue: expectedSig.slice(0, 24) + '...',
     expectedValue: providedSig.slice(0, 24) + '...',
   });
 
   // Check 4: Parent Block Chaining
-  let chainIntegrityValid = true;
+  let chainIntegrityValid: boolean | null = null;
   if (expectedParentHash) {
     chainIntegrityValid = evidence.parentBlockHash === expectedParentHash;
     checkpoints.push({
-      checkpoint: 'Checkpoint 4: Immutable Blockchain Parent Hash Link',
+      checkpoint: 'Checkpoint 4: Parent Hash Link',
       status: chainIntegrityValid ? 'PASSED' : 'FAILED',
       description: chainIntegrityValid
         ? 'Parent block hash link matches sequential ledger history.'
@@ -285,23 +348,55 @@ export function verifyActionEvidence(
     });
   } else {
     checkpoints.push({
-      checkpoint: 'Checkpoint 4: Immutable Blockchain Parent Hash Link',
-      status: 'PASSED',
-      description: `Chained from block ${evidence.parentBlockHash?.slice(0, 16)}...`,
+      checkpoint: 'Checkpoint 4: Parent Hash Link',
+      status: 'SKIPPED',
+      description: 'No expected parent hash supplied; chain link not checked.',
+      computedValue: evidence.parentBlockHash,
     });
   }
 
-  // Check 5: Hardware Enclave Attestation (Honest Declassified Evaluation)
-  const hasEnclave = !!evidence.enclaveHardwareProof;
+  // Check 5: Merkle leaf + block hash recomputation (only when the record stores them)
+  let merkleLeafValid: boolean | null = null;
+  let blockHashValid: boolean | null = null;
+  if (evidence.merkleLeafHash) {
+    const leaf =
+      '0x' + crypto.createHash('sha256').update(`${txId}:${evidence.requestPayloadHash || ''}:${evidence.responseHash || ''}:${providedSig}`).digest('hex');
+    merkleLeafValid = leaf === evidence.merkleLeafHash;
+    if (evidence.blockHash && evidence.parentBlockHash && typeof evidence.blockHeight === 'number') {
+      const block =
+        '0x' +
+        crypto
+          .createHash('sha256')
+          .update(`${evidence.parentBlockHash}:${evidence.blockHeight}:${evidence.merkleLeafHash}:${timestamp}`)
+          .digest('hex');
+      blockHashValid = block === evidence.blockHash;
+    }
+  }
   checkpoints.push({
-    checkpoint: 'Checkpoint 5: Hardware TPM/Enclave Measurement Evaluation',
-    status: hasEnclave ? 'PASSED' : 'WARNING',
-    description: hasEnclave
-      ? 'External hardware verifier TPM attestation confirmed.'
-      : 'Standard execution container telemetry recorded (Hardware Enclave proof UNAVAILABLE).',
+    checkpoint: 'Checkpoint 5: Merkle Leaf & Block Hash Recomputation',
+    status: merkleLeafValid === null ? 'SKIPPED' : merkleLeafValid && blockHashValid !== false ? 'PASSED' : 'FAILED',
+    description:
+      merkleLeafValid === null
+        ? 'Record has no stored leaf hash; not checked.'
+        : merkleLeafValid && blockHashValid !== false
+          ? 'Leaf and block hashes recomputed from the record fields and match.'
+          : 'Recomputed leaf or block hash does not match the stored value.',
   });
 
-  const tamperDetected = !reqHashMatched || !respHashMatched || !signatureMatch || !chainIntegrityValid;
+  // Check 6: Hardware attestation. No external verifier exists in COMPUTLESS.
+  checkpoints.push({
+    checkpoint: 'Checkpoint 6: Hardware Attestation',
+    status: 'UNAVAILABLE',
+    description: 'No hardware/TPM attestation verifier exists in COMPUTLESS; nothing was checked.',
+  });
+
+  const tamperDetected =
+    !reqHashMatched ||
+    !respHashMatched ||
+    !signatureMatch ||
+    chainIntegrityValid === false ||
+    merkleLeafValid === false ||
+    blockHashValid === false;
   const valid = !tamperDetected;
 
   return {
@@ -317,11 +412,14 @@ export function verifyActionEvidence(
     providedSignature: providedSig,
     signatureMatch,
     chainIntegrityValid,
-    merkleProofValid: true,
+    merkleProofValid: null,
+    merkleLeafValid,
+    blockHashValid,
+    scope: LOCAL_SIGNATURE_SCOPE,
     attestationCheckpoints: checkpoints,
     verdictSummary: valid
-      ? 'ACTION EVIDENCE VERIFIED: Cryptographic signatures match exactly.'
-      : 'EVIDENCE INTEGRITY FAULT: Signature or hash mismatch detected.',
+      ? 'Local signature and the checked hashes match (local HMAC; not canonical PGL).'
+      : 'Integrity fault: signature or hash mismatch.',
   };
 }
 
@@ -404,13 +502,15 @@ export function generateEvidenceMerkleProof(
 
   const merkleRoot = currentLevel[0] || targetLeaf;
 
-  return {
+  const proof: EvidenceMerkleProof = {
     leafHash: targetLeaf,
     leafIndex,
     merkleRoot,
     auditPath,
-    isValid: true,
+    isValid: false,
   };
+  proof.isValid = verifyMerkleProof(proof);
+  return proof;
 }
 
 /**
@@ -429,200 +529,161 @@ export function verifyMerkleProof(proof: EvidenceMerkleProof): boolean {
 }
 
 /**
- * Confirms Action Execution and records ExecutionObservation / RuntimeMeasurement.
- * Strictly declassified: Never returns false hardware attestation.
+ * Builds a LOCAL observation certificate for an execution. Only dimensions that
+ * can actually be evaluated are scored; everything else is NOT_EVALUATED /
+ * UNAVAILABLE with null values. Caller-asserted evidence flags are never
+ * promoted to VERIFIED: COMPUTLESS has no external evidence verifier.
  */
 export function confirmActionExecution(
   req: ActionConfirmationRequest,
   capability?: CapabilityDefinition,
-  node?: SubstrateNode
+  _node?: SubstrateNode,
+  observed?: { sandboxRan?: boolean }
 ): ActionExecutionConfirmationCertificate {
   const timestamp = new Date().toISOString();
-  const certId = 'aecc-cert-' + req.transactionId.replace('tx-', '') + '-' + crypto.randomBytes(2).toString('hex');
+  const certId = 'aecc-cert-' + String(req.transactionId || 'tx').replace('tx-', '') + '-' + crypto.randomBytes(2).toString('hex');
   const actionId = req.actionId || 'act-' + crypto.randomBytes(3).toString('hex');
+  const responsePayload = req.responsePayload && typeof req.responsePayload === 'object' ? req.responsePayload : {};
 
-  // Dimension 1: Schema Conformance
+  // Dimension 1: output schema conformance (only when the capability declares an output schema)
   const matchedFields: string[] = [];
   const missingRequiredFields: string[] = [];
-  const typeMismatchFields: { field: string; expectedType: string; actualType: string }[] = [];
-
-  let schemaKeys: string[] = [];
-  if (capability?.schemaJson) {
-    try {
-      const parsed = JSON.parse(capability.schemaJson);
-      schemaKeys = Object.keys(parsed);
-    } catch {
-      schemaKeys = ['result', 'status'];
-    }
+  const outputKeys = capability?.outputSchema ? Object.keys(capability.outputSchema) : [];
+  let schemaConformance: ActionExecutionConfirmationCertificate['dimensions']['schemaConformance'];
+  if (outputKeys.length === 0) {
+    schemaConformance = {
+      status: 'NOT_EVALUATED',
+      scorePct: null,
+      matchedFields,
+      missingRequiredFields,
+      typeMismatchFields: [],
+      details: 'The capability declares no output schema, so output conformance was not evaluated.',
+    };
   } else {
-    schemaKeys = ['result', 'status'];
-  }
-
-  for (const key of schemaKeys) {
-    if (key in req.responsePayload) {
-      matchedFields.push(key);
-    } else {
-      missingRequiredFields.push(key);
-    }
-  }
-
-  const schemaScore =
-    missingRequiredFields.length === 0 && typeMismatchFields.length === 0
-      ? 100
-      : Math.max(20, Math.round(((matchedFields.length - typeMismatchFields.length) / Math.max(1, schemaKeys.length)) * 100));
-
-  const schemaConformance: ActionExecutionConfirmationCertificate['dimensions']['schemaConformance'] = {
-    status: schemaScore === 100 ? 'PASSED' : schemaScore >= 60 ? 'PARTIAL' : 'FAILED',
-    scorePct: schemaScore,
-    matchedFields,
-    missingRequiredFields,
-    typeMismatchFields,
-    details:
-      schemaScore === 100
-        ? `Output payload conforms to ${capability?.id || 'capability'} JSON schema specification.`
-        : `Schema variance detected: ${missingRequiredFields.length} missing fields.`,
-  };
-
-  // Dimension 2: SLA & Latency Compliance
-  const budgetedMaxLatencyMs = capability ? 150 + (capability.maxPricePerCall || 1) * 20 : 250;
-  const actualLatency = Math.max(1, req.actualWallClockLatencyMs);
-  const varianceMs = actualLatency - budgetedMaxLatencyMs;
-  const slaCompliant = actualLatency <= budgetedMaxLatencyMs;
-
-  let slaScore = 100;
-  if (!slaCompliant) {
-    const overrunRatio = varianceMs / budgetedMaxLatencyMs;
-    slaScore = Math.max(30, Math.round(100 - overrunRatio * 60));
-  }
-
-  const slaLatency: ActionExecutionConfirmationCertificate['dimensions']['slaLatency'] = {
-    status: slaCompliant ? 'PASSED' : slaScore >= 60 ? 'DEGRADED' : 'FAILED',
-    scorePct: slaScore,
-    actualWallClockLatencyMs: actualLatency,
-    budgetedMaxLatencyMs,
-    varianceMs,
-    slaCompliant,
-    details: slaCompliant
-      ? `Execution completed in ${actualLatency}ms (Budget: ${budgetedMaxLatencyMs}ms).`
-      : `SLA Variance: Execution of ${actualLatency}ms exceeded latency budget of ${budgetedMaxLatencyMs}ms by ${varianceMs}ms.`,
-  };
-
-  // Dimension 3: Resource Containment & Memory Envelope
-  const memoryQuotaBytes = 256 * 1024 * 1024; // 256 MB Sandbox ceiling
-  const memoryUsedBytes = req.memoryUsedBytes || 4096;
-  const memoryUsagePct = +((memoryUsedBytes / memoryQuotaBytes) * 100).toFixed(2);
-  const resourceScore = memoryUsedBytes <= memoryQuotaBytes ? 100 : 40;
-
-  // Robust RuntimeObservation measurement: strictly defaults to 'UNAVAILABLE' until verified by external evidence
-  let runtimeObservation: RuntimeObservation = {
-    state: 'UNAVAILABLE',
-    isolationLevel: 'UNVERIFIED',
-    verifiedByEvidence: false,
-    measuredAt: new Date().toISOString(),
-    details: 'Runtime containment isolation unverified: external cryptographic evidence or hardware attestation is UNAVAILABLE.',
-  };
-
-  if (req.externalEvidenceSource || req.isolationVerifiedByEvidence || req.hardwareProofProvided) {
-    runtimeObservation = {
-      state: 'VERIFIED',
-      isolationLevel: req.hardwareProofProvided ? 'HARDWARE_ENCLAVE' : 'CONTAINMENT_SANDBOX',
-      verifiedByEvidence: true,
-      evidenceSource: req.externalEvidenceSource || (req.hardwareProofProvided ? 'TPM_2_0_ENCLAVE_ATTESTATION' : 'CONTAINMENT_FAULT_ISOLATION_EVIDENCE'),
-      measuredAt: new Date().toISOString(),
-      details: 'Runtime containment isolation independently verified via cryptographic evidence.',
-    };
-  } else if (req.executionStatus === 'SUCCESS' && node?.isSovereign) {
-    runtimeObservation = {
-      state: 'OBSERVED',
-      isolationLevel: 'PROCESS_ISOLATION',
-      verifiedByEvidence: false,
-      measuredAt: new Date().toISOString(),
-      details: 'In-process execution observed on sovereign node, pending external containment evidence.',
+    for (const key of outputKeys) (key in responsePayload ? matchedFields : missingRequiredFields).push(key);
+    const score = Math.round((matchedFields.length / outputKeys.length) * 100);
+    schemaConformance = {
+      status: score === 100 ? 'PASSED' : score >= 60 ? 'PARTIAL' : 'FAILED',
+      scorePct: score,
+      matchedFields,
+      missingRequiredFields,
+      typeMismatchFields: [],
+      details: `${matchedFields.length}/${outputKeys.length} declared output fields present (presence only; types not checked).`,
     };
   }
+
+  // Dimension 2: latency against a caller-supplied budget (none → not evaluated)
+  const actualLatency = Math.max(0, Number(req.actualWallClockLatencyMs) || 0);
+  const budget = Number(req.latencyBudgetMs);
+  let slaLatency: ActionExecutionConfirmationCertificate['dimensions']['slaLatency'];
+  if (!Number.isFinite(budget) || budget <= 0) {
+    slaLatency = {
+      status: 'NOT_EVALUATED',
+      scorePct: null,
+      actualWallClockLatencyMs: actualLatency,
+      budgetedMaxLatencyMs: null,
+      varianceMs: null,
+      slaCompliant: null,
+      details: `Measured ${actualLatency}ms. No latency budget was supplied, so no SLA was evaluated.`,
+    };
+  } else {
+    const compliant = actualLatency <= budget;
+    slaLatency = {
+      status: compliant ? 'PASSED' : 'FAILED',
+      scorePct: compliant ? 100 : 0,
+      actualWallClockLatencyMs: actualLatency,
+      budgetedMaxLatencyMs: budget,
+      varianceMs: actualLatency - budget,
+      slaCompliant: compliant,
+      details: compliant
+        ? `Measured ${actualLatency}ms within the caller-supplied budget of ${budget}ms.`
+        : `Measured ${actualLatency}ms exceeds the caller-supplied budget of ${budget}ms.`,
+    };
+  }
+
+  // Dimension 3: resources. No per-workload memory quota exists.
+  const memoryUsedBytes = Math.max(0, Number(req.memoryUsedBytes) || 0);
+  const claimed = req.externalEvidenceSource || req.isolationVerifiedByEvidence || req.hardwareProofProvided || req.enclaveAttested;
+  const claimNote = claimed
+    ? ` Caller claimed external evidence${req.externalEvidenceSource ? ` '${req.externalEvidenceSource}'` : ''}; COMPUTLESS has no verifier for it, so the claim was not accepted.`
+    : '';
+  const runtimeObservation: RuntimeObservation = observed?.sandboxRan
+    ? {
+        state: 'OBSERVED',
+        isolationLevel: 'PROCESS_ISOLATION',
+        verifiedByEvidence: false,
+        evidenceSource: 'computless-child-process-sandbox (spawned by this server)',
+        measuredAt: timestamp,
+        details:
+          `Ran in a child process spawned by this server: env inherited=${SANDBOX_BOUNDARY.envInherited}, filesystem ${SANDBOX_BOUNDARY.filesystem}, ` +
+          `child processes ${SANDBOX_BOUNDARY.childProcesses}, network ${SANDBOX_BOUNDARY.network}, cgroups=${SANDBOX_BOUNDARY.cgroups}, hardware isolation=${SANDBOX_BOUNDARY.hardwareIsolation}.` +
+          claimNote,
+      }
+    : {
+        state: 'UNAVAILABLE',
+        isolationLevel: 'UNVERIFIED',
+        verifiedByEvidence: false,
+        measuredAt: timestamp,
+        details: 'COMPUTLESS did not observe this execution; isolation is unknown.' + claimNote,
+      };
 
   const resourceContainment: ActionExecutionConfirmationCertificate['dimensions']['resourceContainment'] = {
-    status: resourceScore === 100 ? 'PASSED' : 'EXCEEDED',
-    scorePct: resourceScore,
+    status: 'NOT_EVALUATED',
+    scorePct: null,
     memoryUsedBytes,
-    memoryQuotaBytes,
-    memoryUsagePct,
-    cpuExecutionMs: actualLatency,
+    memoryQuotaBytes: null,
+    memoryUsagePct: null,
+    cpuExecutionMs: null,
     runtimeObservation,
-    details: `In-process fault boundary memory bounded at ${(memoryUsedBytes / 1024).toFixed(1)} KB (${memoryUsagePct}% of quota). Isolation State: ${runtimeObservation.state} (${runtimeObservation.isolationLevel}).`,
+    details: `Child-process RSS ${(memoryUsedBytes / 1024).toFixed(1)} KB (reported). No per-workload memory quota exists; the V8 heap is capped via --max-old-space-size. CPU time is not measured.`,
   };
 
-  // Dimension 4: Runtime Exit Status
+  // Dimension 4: runtime exit status
   const isSuccess = req.executionStatus === 'SUCCESS';
-  const runtimeScore = isSuccess ? 100 : 0;
-
   const runtimeExit: ActionExecutionConfirmationCertificate['dimensions']['runtimeExit'] = {
     status: isSuccess ? 'PASSED' : 'FAILED',
-    scorePct: runtimeScore,
+    scorePct: isSuccess ? 100 : 0,
     exitCode: isSuccess ? 0 : 1,
     errorCount: isSuccess ? 0 : 1,
-    runtimeStatus: req.executionStatus === 'BOUND_VIOLATION' || req.executionStatus === 'UNAUTHORIZED' ? 'POLICY_VIOLATION' : req.executionStatus,
-    stdoutLineCount: req.stdout?.length || 1,
-    details: isSuccess
-      ? 'Execution terminated cleanly with Exit Code 0.'
-      : `Execution encountered runtime fault: ${req.executionStatus}.`,
+    runtimeStatus:
+      req.executionStatus === 'BOUND_VIOLATION' || req.executionStatus === 'UNAUTHORIZED' ? 'POLICY_VIOLATION' : req.executionStatus,
+    stdoutLineCount: req.stdout?.length ?? 0,
+    details: isSuccess ? 'Workload finished without an error.' : `Workload did not succeed: ${req.executionStatus}.`,
   };
 
-  // Dimension 5: Hardware Telemetry (Declassified into honest states: VERIFIED | OBSERVED | UNAVAILABLE | NOT_SUPPORTED)
-  const hardwareState: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED' =
-    req.hardwareProofProvided === true
-      ? 'VERIFIED'
-      : node?.isSovereign
-      ? 'OBSERVED'
-      : 'UNAVAILABLE';
-
-  const uptimeAttestationPct = node ? (node.status === 'online' ? 99.99 : 98.5) : 99.95;
-  const telemetryScore = hardwareState === 'VERIFIED' ? 100 : hardwareState === 'OBSERVED' ? 75 : 50;
-
+  // Dimension 5: hardware telemetry. Not available: no hardware verifier exists.
   const hardwareTelemetry: ActionExecutionConfirmationCertificate['dimensions']['hardwareTelemetry'] = {
-    status: hardwareState,
-    scorePct: telemetryScore,
-    monotonicCounterDelta: 1,
-    uptimeAttestationPct,
-    enclaveAttestationValid: hardwareState === 'VERIFIED',
-    nonceFreshness: 'FRESH',
-    hardwareProofState: hardwareState,
-    details:
-      hardwareState === 'VERIFIED'
-        ? `Hardware TPM/Enclave attestation cryptographically verified.`
-        : hardwareState === 'OBSERVED'
-        ? `Node telemetry observed (Sovereign Node Host Observation: ${uptimeAttestationPct}% uptime). Hardware attestation unverified.`
-        : `Hardware enclave attestation UNAVAILABLE for standard execution cell.`,
+    status: 'UNAVAILABLE',
+    scorePct: null,
+    monotonicCounterDelta: null,
+    uptimeAttestationPct: null,
+    enclaveAttestationValid: false,
+    nonceFreshness: null,
+    hardwareProofState: 'UNAVAILABLE',
+    details: 'No hardware, TPM or enclave attestation verifier exists in COMPUTLESS; nothing was measured.',
   };
 
-  // Overall Confirmation Score computation
-  const overallScore = Math.round(
-    schemaScore * 0.3 +
-    slaScore * 0.25 +
-    resourceScore * 0.15 +
-    runtimeScore * 0.2 +
-    telemetryScore * 0.1
+  const scores = [schemaConformance.scorePct, slaLatency.scorePct, runtimeExit.scorePct].filter(
+    (v): v is number => typeof v === 'number'
   );
+  const overallScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
 
-  let overallConfirmationStatus: ActionExecutionConfirmationCertificate['overallConfirmationStatus'] = 'FULLY_CONFIRMED';
-  if (!isSuccess) {
-    overallConfirmationStatus = 'EXECUTION_FAILED';
-  } else if (schemaScore < 60) {
-    overallConfirmationStatus = 'SCHEMA_MISMATCH';
-  } else if (slaScore < 80) {
-    overallConfirmationStatus = 'DEGRADED_SLA';
-  }
+  let overallConfirmationStatus: ActionExecutionConfirmationCertificate['overallConfirmationStatus'] = 'LOCALLY_OBSERVED';
+  if (!isSuccess) overallConfirmationStatus = 'EXECUTION_FAILED';
+  else if (schemaConformance.status === 'FAILED') overallConfirmationStatus = 'SCHEMA_MISMATCH';
+  else if (slaLatency.status === 'FAILED') overallConfirmationStatus = 'DEGRADED_SLA';
 
-  // Certificate cryptographic attestation signature
   const certSigPayload = `${certId}:${actionId}:${req.transactionId}:${req.capabilityId}:${overallScore}:${overallConfirmationStatus}:${timestamp}`;
-  const cryptographicAttestationSignature = '0x_aecc_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(certSigPayload).digest('hex');
+  const cryptographicAttestationSignature =
+    '0x_aecc_sig_' + crypto.createHmac('sha256', SUBSTRATE_CRYPTO_SECRET).update(certSigPayload).digest('hex');
 
+  const evaluated = ['runtime exit', schemaConformance.scorePct !== null ? 'output schema' : null, slaLatency.scorePct !== null ? 'latency budget' : null]
+    .filter(Boolean)
+    .join(', ');
   const summaryVerdict =
-    overallConfirmationStatus === 'FULLY_CONFIRMED'
-      ? `OBSERVATION CONFIRMED (Score: ${overallScore}%): Action executed with full schema compliance within SLA bounds.`
-      : overallConfirmationStatus === 'DEGRADED_SLA'
-      ? `OBSERVATION WITH SLA VARIANCE (Score: ${overallScore}%): Action completed with latency variance.`
-      : `OBSERVATION FAILED (Score: ${overallScore}%): Execution faulted.`;
+    overallConfirmationStatus === 'EXECUTION_FAILED'
+      ? `LOCAL OBSERVATION: execution did not succeed (${req.executionStatus}).`
+      : `LOCAL OBSERVATION (evaluated: ${evaluated}; score ${overallScore ?? 'n/a'}%). Hardware attestation unavailable. Not an attestation.`;
 
   return {
     certificateId: certId,
@@ -642,13 +703,16 @@ export function confirmActionExecution(
       hardwareTelemetry,
     },
     cryptographicAttestationSignature,
-    issuer: 'computless://substrate/runtime-measurement-verifier/v1',
+    issuer: 'computless-local-observer (not an attestation authority)',
     summaryVerdict,
+    evidenceLabel: 'UNVERIFIED',
+    canonical: false,
   };
 }
 
 /**
- * Generates a non-replayable Authorization Receipt
+ * Creates a LOCAL authorization receipt (HMAC with this process's secret).
+ * Not CAPPO authority; nothing consumes or enforces it.
  */
 export function createAuthorizationReceipt(
   cappoGrantId: string,
@@ -678,17 +742,20 @@ export function createAuthorizationReceipt(
     expiresAt,
     signature,
     status: 'active',
+    evidenceLabel: 'UNVERIFIED',
+    canonical: false,
   };
 }
 
 /**
- * Cryptographically verifies an Authorization Receipt (Strict Exact Match)
+ * Verifies a local Authorization Receipt (strict exact HMAC match).
  */
 export function verifyAuthorizationReceipt(receipt: AuthorizationReceipt): {
   valid: boolean;
   expired: boolean;
   signatureMatch: boolean;
   details: string;
+  scope: string;
 } {
   const isExpired = Date.now() > receipt.expiresAt;
   const expectedScopeDigest = hashPayload({
@@ -709,15 +776,27 @@ export function verifyAuthorizationReceipt(receipt: AuthorizationReceipt): {
     expired: isExpired,
     signatureMatch,
     details: valid
-      ? 'Authorization Receipt cryptographically verified with non-replayable nonce.'
+      ? 'Local receipt signature matches and the receipt has not expired (single use is NOT enforced).'
       : isExpired
       ? 'Receipt has expired.'
-      : 'Signature mismatch - forged or tampered receipt detected.',
+      : 'Signature mismatch: forged, tampered, or signed with a different process secret.',
+    scope: LOCAL_SIGNATURE_SCOPE,
   };
 }
 
+/** Re-checks a stored local PGL-proof signature against its stored hashes. */
+export function verifyPGLRecordSignature(rec: {
+  transactionId: string;
+  capabilityId: string;
+  requestPayloadHash: string;
+  responseHash: string;
+  pglSignature: string;
+}): boolean {
+  return Boolean(rec.pglSignature) && signPGLProof(rec.transactionId, rec.capabilityId, rec.requestPayloadHash, rec.responseHash) === rec.pglSignature;
+}
+
 /**
- * Verifies a PGL Cryptographic Proof against expected payload and signature (Strict Exact Match)
+ * Verifies a local PGL proof against a payload and signature (strict exact match).
  */
 export function verifyPGLProof(
   txId: string,
@@ -728,26 +807,25 @@ export function verifyPGLProof(
 ): PGLVerificationResult {
   const computedPayloadHash = hashPayload(payload);
   const expectedSignature = signPGLProof(txId, capabilityId, computedPayloadHash, responseHash);
-  // STRICT: exact match only
   const signatureMatch = providedSignature === expectedSignature;
 
-  const attestationChain = [
+  const attestationChain: PGLVerificationResult['attestationChain'] = [
     {
-      layer: 'Layer 1: SHA-256 Payload Digest',
-      status: 'PASSED' as const,
+      layer: 'Payload digest',
+      status: 'INFO',
       detail: `Payload canonicalized and hashed to ${computedPayloadHash.slice(0, 18)}...`,
     },
     {
-      layer: 'Layer 5: CAPPO Authority Binding',
-      status: 'PASSED' as const,
-      detail: `Transaction ${txId} bound to authority context.`,
+      layer: 'CAPPO authority binding',
+      status: 'SKIPPED',
+      detail: 'Not checked: local records carry no CAPPO decision binding.',
     },
     {
-      layer: 'Layer 8: Cryptographic Signature Audit',
-      status: signatureMatch ? ('PASSED' as const) : ('FAILED' as const),
+      layer: 'Local HMAC signature',
+      status: signatureMatch ? 'PASSED' : 'FAILED',
       detail: signatureMatch
-        ? `Cryptographic signature ${providedSignature.slice(0, 20)}... verified.`
-        : `SIGNATURE MISMATCH! Provided: ${providedSignature.slice(0, 16)}..., Expected: ${expectedSignature.slice(0, 16)}...`,
+        ? `Signature ${providedSignature.slice(0, 20)}... matches (this process's secret).`
+        : `Signature mismatch. Provided: ${String(providedSignature).slice(0, 16)}..., expected: ${expectedSignature.slice(0, 16)}...`,
     },
   ];
 
@@ -759,6 +837,7 @@ export function verifyPGLProof(
     signatureMatch,
     verificationTimestamp: new Date().toISOString(),
     attestationChain,
+    scope: LOCAL_SIGNATURE_SCOPE,
   };
 }
 
@@ -776,6 +855,9 @@ export async function executeInIsolatedVMSandbox(
   outputData: Record<string, unknown>;
   /** Child process RSS when the workload finished (0 when unknown). Not a per-workload quota. */
   memoryUsageBytes: number;
+  /** Same value, null when unknown. */
+  rssBytes: number | null;
+  /** Wall-clock time measured inside the child around the workload. */
   durationMs: number;
 }> {
   const r = await runInChildSandbox(code, { input: inputPayload, context: { inputPayload } }, timeoutMs);
@@ -788,11 +870,11 @@ export async function executeInIsolatedVMSandbox(
         ? (r.output as Record<string, unknown>)
         : { value: r.output }
       : { error: r.error?.message ?? 'Execution fault', code: r.error?.code ?? r.status };
-  return { status, stdout, outputData, memoryUsageBytes: r.rssBytes ?? 0, durationMs: r.durationMs };
+  return { status, stdout, outputData, memoryUsageBytes: r.rssBytes ?? 0, rssBytes: r.rssBytes, durationMs: r.durationMs };
 }
 
 /**
- * RFC 9457 Problem Details for Machine-Readable Refusals
+ * RFC 9457 Problem Details. Problem types are URNs (no hosted documentation).
  */
 export function buildProblemDetails(
   type: string,
@@ -801,30 +883,26 @@ export function buildProblemDetails(
   detail: string,
   instance: string
 ) {
+  const slug = String(type)
+    .replace(/^https?:\/\/[^/]+\/probs\//, '')
+    .replace(/^urn:computless:problem:/, '');
   return {
-    type: `https://computless.cloud/probs/${type}`,
+    type: `urn:computless:problem:${slug}`,
     title,
     status,
     detail,
     instance,
     timestamp: new Date().toISOString(),
-    governanceInvariant: status === 403 ? 'Authority-Invariant-403' : 'Fallback-Invariant-503',
+    ...(status === 403 ? { governanceInvariant: 'Authority-Invariant-403' } : status === 503 ? { governanceInvariant: 'Fallback-Invariant-503' } : {}),
   };
 }
 
 /**
- * Generates x402 Micropayment Headers
+ * x402-style headers. No settlement backend exists, so the only truthful
+ * statement is that the request is unsettled.
  */
-export function buildx402Headers(amountVEK: number, providerId: string, txId: string) {
-  const nonce = crypto.randomBytes(8).toString('hex');
-  const signature = crypto
-    .createHmac('sha256', SUBSTRATE_CRYPTO_SECRET)
-    .update(`${txId}:${providerId}:${amountVEK}:${nonce}`)
-    .digest('hex');
-
+export function buildx402Headers(providerId: string, txId: string) {
   return {
-    'Payment-Required': `x402-veklom-v2 asset=VEK amount=${amountVEK} provider=${providerId}`,
-    'Payment-Signature': `sig=0x${signature.slice(0, 32)} nonce=${nonce}`,
-    'Payment-Response': `status=settled asset=VEK amount=${amountVEK} tx=${txId}`,
+    'Payment-Response': `status=unsettled reason=settlement-not-implemented provider=${providerId} tx=${txId}`,
   };
 }

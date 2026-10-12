@@ -41,11 +41,18 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
     try {
       const res = await fetch(selectedEndpoint, {
         method: selectedEndpoint === '/api/substrate/route' ? 'POST' : 'GET',
+        // GET requests carry no body
         headers: { 'Content-Type': 'application/json' },
         body: selectedEndpoint === '/api/substrate/route' ? restPayload : undefined,
       });
-      const data = await res.json();
-      setRestResponse(JSON.stringify(data, null, 2));
+      const text = await res.text();
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        /* not JSON */
+      }
+      setRestResponse(`// HTTP ${res.status} ${res.headers.get('content-type') ?? ''}\n` + JSON.stringify(body, null, 2));
     } catch (err) {
       setRestResponse(JSON.stringify({ error: String(err) }, null, 2));
     } finally {
@@ -80,8 +87,14 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mcpPayload),
       });
-      const data = await res.json();
-      setMcpResponse(JSON.stringify(data, null, 2));
+      const text = await res.text();
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        /* not JSON */
+      }
+      setMcpResponse(`// HTTP ${res.status}\n` + JSON.stringify(body, null, 2));
     } catch (err) {
       setMcpResponse(JSON.stringify({ error: String(err) }, null, 2));
     } finally {
@@ -91,7 +104,6 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
 
   const generatedCurl = `curl -X POST "${window.location.origin}/api/substrate/route" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer cappo-grant-alpha-001" \\
   -d '${restPayload.replace(/\n/g, '')}'`;
 
   const copyCurl = () => {
@@ -110,13 +122,14 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
               <span className="px-2.5 py-0.5 rounded text-xs font-mono font-medium bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
                 REST &amp; MCP PROTOCOL CONSOLE
               </span>
-              <span className="text-xs text-slate-400 font-mono">Portable Substrate Interop</span>
+              <span className="text-xs text-slate-400 font-mono">prototype endpoints</span>
             </div>
             <h2 className="text-xl font-bold text-white mt-1">
               API Documentation, cURL Generator &amp; MCP Test Bench
             </h2>
             <p className="text-sm text-slate-300 mt-1 max-w-3xl">
-              Utilizing standard REST and HTTP for inter-service communication with CAPPO security headers. Model Context Protocol (MCP) JSON-RPC support enhances microservices architecture efficiency.
+              Send requests to this server's REST endpoints and its prototype MCP (JSON-RPC 2.0) endpoint. Responses are shown exactly as
+              returned. The route endpoint is a simulation that checks a local grant, not CAPPO.
             </p>
           </div>
 
@@ -173,10 +186,13 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
                 onChange={(e) => setSelectedEndpoint(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
               >
-                <option value="/api/substrate/route">POST /api/substrate/route (HRMR Router)</option>
+                <option value="/api/substrate/route">POST /api/substrate/route (router simulation)</option>
                 <option value="/api/substrate/nodes">GET /api/substrate/nodes (Nodes List)</option>
                 <option value="/api/substrate/capabilities">GET /api/substrate/capabilities (Catalog)</option>
-                <option value="/api/health">GET /api/health (Substrate Health)</option>
+                <option value="/api/health">GET /api/health (API health)</option>
+                <option value="/api/fabric/status">GET /api/fabric/status (Veklom fabric status)</option>
+                <option value="/health/dependencies">GET /health/dependencies (dependency reachability)</option>
+                <option value="/protocol.json">GET /protocol.json (protocol manifest)</option>
               </select>
             </div>
 
@@ -210,7 +226,7 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
             </h3>
 
             <pre className="p-4 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-emerald-300 max-h-[420px] overflow-auto leading-relaxed">
-              {restResponse || '// Send a request to observe real HTTP response headers and JSON output.'}
+              {restResponse || '// Send a request to see the HTTP status and response body.'}
             </pre>
           </div>
         </div>
@@ -221,8 +237,11 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
           {/* MCP Builder */}
           <div className="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
             <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider font-mono">
-              MCP JSON-RPC 2.0 Test Bench
+              MCP JSON-RPC 2.0 test bench (prototype)
             </h3>
+            <p className="text-[11px] text-slate-400">
+              tools/list returns the advertised tools. Whether tools/call actually runs anything is up to the server — read the response.
+            </p>
 
             <div className="space-y-2">
               <label className="text-xs font-mono text-slate-400">MCP Method</label>
@@ -305,27 +324,20 @@ export const APIStudioMCP: React.FC<APIStudioMCPProps> = ({ capabilities }) => {
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 font-mono text-xs">
           <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
             <Code className="h-4 w-4 text-indigo-400" />
-            <span>OpenAPI 3.0 Substrate Specification Preview</span>
+            <span>OpenAPI 3.0 preview (route simulation)</span>
           </h3>
 
           <pre className="p-4 bg-slate-950 border border-slate-800 rounded-lg text-slate-300 max-h-[450px] overflow-auto leading-relaxed">
 {`openapi: 3.0.3
 info:
-  title: Computless Cloud Substrate API
-  description: Universal governance layer implementing HRMR routing, CAPPO authority, and PGL evidence ledger.
-  version: 1.0.0
+  title: COMPUTLESS substrate API (prototype)
+  description: Prototype. HRMR route simulation over local node records and local grants.
+  version: 0.1.0
 paths:
   /api/substrate/route:
     post:
       summary: HRMR Capability Router
       description: Routes capability workload to preferred or fallback substrate node.
-      parameters:
-        - in: header
-          name: Authorization
-          schema:
-            type: string
-          required: true
-          description: CAPPO Grant authorization token
       requestBody:
         required: true
         content:
@@ -335,17 +347,20 @@ paths:
               properties:
                 capabilityId:
                   type: string
+                cappoGrantId:
+                  type: string
+                  description: Local grant record id (not a CAPPO decision)
                 preferredNodeId:
                   type: string
                 payload:
                   type: object
       responses:
         '200':
-          description: Execution successful or rerouted via fallback.
+          description: Simulated route succeeded or rerouted via fallback (mock output).
         '403':
-          description: Terminal Authority Denial (Invariant 1 enforced).
+          description: Local grant missing, revoked or expired (terminal).
         '503':
-          description: Infrastructure failure across all nodes.`}
+          description: Every eligible node record is offline (simulated).`}
           </pre>
         </div>
       )}

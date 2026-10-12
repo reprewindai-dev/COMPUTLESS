@@ -27,20 +27,24 @@ import {
   AgentIdentity,
   SandboxExecutionResult,
   CapabilityDefinition,
+  CAPPOGrant,
 } from '../types';
+import { EvidenceBadge, RecordBadge, DemoDataNote, measured, hasNumber } from './EvidenceBadge';
+import { DirectiveControl, GovernanceBlock, postExecute, problemSummary } from './Governance';
 
 interface VeklomAmplificationEngineProps {
   capabilities: CapabilityDefinition[];
+  grants?: CAPPOGrant[];
 }
 
-export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps> = ({ capabilities }) => {
+export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps> = ({ capabilities, grants = [] }) => {
   const [metrics, setMetrics] = useState<VeklomAmplificationMetrics | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeSubView, setActiveSubView] = useState<'ladder' | 'sandbox' | 'receipts' | 'blocked' | 'identities' | 'recursion'>('ladder');
 
   // Sandbox state
   const [sandboxCode, setSandboxCode] = useState<string>(
-    '// Topological Machine-Native VM Execution\nconst val = input.val || 10;\nconst matrix = [val, val * 2, val * 3];\noutput.processedMatrix = matrix;\noutput.checksum = "0x" + (val * 1337).toString(16);\nconsole.log("Matrix compute completed for val=" + val);'
+    '// Runs in the COMPUTLESS child-process sandbox.\n// `input` is your JSON payload; write results to `output`.\nconst val = (input && input.val) || 10;\noutput.processedMatrix = [val, val * 2, val * 3];\noutput.checksum = "0x" + (val * 1337).toString(16);\nconsole.log("matrix compute completed for val=" + val);'
   );
   const [sandboxPayload, setSandboxPayload] = useState<string>('{\n  "val": 42,\n  "intent": "matrix_compute"\n}');
   const [selectedSandboxAgent, setSelectedSandboxAgent] = useState<string>('agent:veklom-root-001');
@@ -48,6 +52,11 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
   const [selectedRuntime, setSelectedRuntime] = useState<'node_vm' | 'docker_isolated' | 'e2b_cloud_cell'>('node_vm');
   const [sandboxRunning, setSandboxRunning] = useState<boolean>(false);
   const [sandboxResult, setSandboxResult] = useState<SandboxExecutionResult | null>(null);
+  const [sandboxMeta, setSandboxMeta] = useState<{ status: number; problem: boolean; data: any } | null>(null);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const liveGrants = grants.filter((g) => !g.isRevoked && !(hasNumber(g.expiresAt) && g.expiresAt < Date.now()));
+  const [selectedGrantId, setSelectedGrantId] = useState<string>('');
+  const grantId = selectedGrantId || liveGrants[0]?.grantId || grants[0]?.grantId || 'cappo-grant-alpha-001';
 
   // Receipt verification state
   const [receiptToVerify, setReceiptToVerify] = useState<string>('');
@@ -87,6 +96,8 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
     try {
       setSandboxRunning(true);
       setSandboxResult(null);
+      setSandboxMeta(null);
+      setSandboxError(null);
       let parsedPayload = {};
       try {
         parsedPayload = JSON.parse(sandboxPayload);
@@ -94,24 +105,23 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
         parsedPayload = { raw: sandboxPayload };
       }
 
-      const res = await fetch('/api/substrate/sandbox/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentId: selectedSandboxAgent,
-          capabilityId: selectedCapability,
-          code: sandboxCode,
-          inputPayload: parsedPayload,
-          sandboxType: selectedRuntime,
-          cappoGrantId: 'cappo-grant-alpha-001',
-        }),
+      const r = await postExecute('/api/substrate/sandbox/execute', {
+        capabilityId: selectedCapability,
+        code: sandboxCode,
+        inputPayload: parsedPayload,
+        sandboxType: selectedRuntime,
+        cappoGrantId: grantId,
+        subject: selectedSandboxAgent,
       });
-
-      const data = await res.json();
-      setSandboxResult(data);
+      setSandboxMeta({ status: r.status, problem: r.problem, data: r.data });
+      if (r.ok && r.data && typeof r.data === 'object' && 'status' in r.data) {
+        setSandboxResult(r.data);
+      } else if (!r.data?.governance) {
+        setSandboxError(problemSummary(r));
+      }
       fetchAmplification();
-    } catch (err) {
-      console.error('Sandbox execution error:', err);
+    } catch (err: any) {
+      setSandboxError(err?.message ? String(err.message) : 'request failed');
     } finally {
       setSandboxRunning(false);
     }
@@ -187,7 +197,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: ShieldCheck,
       color: 'text-emerald-400',
       bgColor: 'bg-emerald-500/10 border-emerald-500/30',
-      description: 'Every interaction mediated by non-ambient substrate authority gates.',
+      description: 'Actions that went through an authority check (local counter).',
     },
     {
       rung: 2,
@@ -197,7 +207,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: FileCheck2,
       color: 'text-sky-400',
       bgColor: 'bg-sky-500/10 border-sky-500/30',
-      description: 'Cryptographic, single-use, non-replayable receipts with SHA-256 scope digests.',
+      description: 'Local receipts with a SHA-256 scope digest and an HMAC signature (local key).',
     },
     {
       rung: 3,
@@ -207,7 +217,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: Ban,
       color: 'text-rose-400',
       bgColor: 'bg-rose-500/10 border-rose-500/30',
-      description: 'Fail-closed terminal 403 refusals blocking unprovable or rogue intentions.',
+      description: 'Requests refused with 403 (includes simulated refusals).',
     },
     {
       rung: 4,
@@ -217,7 +227,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: GitFork,
       color: 'text-indigo-400',
       bgColor: 'bg-indigo-500/10 border-indigo-500/30',
-      description: 'HRMR topological route paths executed without ambient authority escape.',
+      description: 'Routes that completed (local counter).',
     },
     {
       rung: 5,
@@ -227,7 +237,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: Database,
       color: 'text-amber-400',
       bgColor: 'bg-amber-500/10 border-amber-500/30',
-      description: 'Immutable Proof Graph Ledger (PGL) blocks with cryptographic HMAC proofs.',
+      description: 'Local evidence records (HMAC, mutable JSON) — not canonical PGL.',
     },
     {
       rung: 6,
@@ -237,7 +247,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: Key,
       color: 'text-purple-400',
       bgColor: 'bg-purple-500/10 border-purple-500/30',
-      description: 'Durable, verifiable agent personas anchored across Trust Tiers T0–T4.',
+      description: 'Agent identity records with a declared trust tier.',
     },
     {
       rung: 7,
@@ -247,7 +257,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
       icon: Layers,
       color: 'text-teal-400',
       bgColor: 'bg-teal-500/10 border-teal-500/30',
-      description: 'Connected FPI federation providers, plugins, and sandbox container cells.',
+      description: 'FPI provider records and plugins (records, not live integrations).',
     },
   ];
 
@@ -263,28 +273,26 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 <Sparkles className="h-3.5 w-3.5" />
                 <span>Veklom Amplification Ladder</span>
               </span>
-              <span className="px-2.5 py-1 text-xs font-mono font-semibold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                100% Verifiable Machine Substrate
-              </span>
+              <EvidenceBadge label="DEMO" title="Counts include seeded sample data" />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight">
-              Topological Machine-Native Substrate &amp; Amplification Engine
+              Amplification ladder &amp; sandbox
             </h1>
             <p className="text-sm text-slate-300 max-w-3xl mt-1">
-              Live mathematical governance framework enforcing non-ambient execution, cryptographic authorization receipts, and iterative recursion loops with zero simulated mock data.
+              Counters over this server's local records (seeded sample data plus anything created here), a real child-process sandbox
+              runner, and an AI-suggestion recursion step. The score is a weighted formula over those counters, not a measurement.
             </p>
           </div>
 
           {/* Amplification Score Badge */}
           <div className="flex items-center gap-4 bg-slate-950/80 border border-indigo-500/30 rounded-xl p-4">
             <div>
-              <p className="text-xs font-mono text-slate-400 uppercase tracking-wider">Amplification Index</p>
+              <p className="text-xs font-mono text-slate-400 uppercase tracking-wider" title="Weights are arbitrary; this is not a measurement">
+                Amplification index (arbitrary weights)
+              </p>
               <div className="flex items-baseline space-x-2">
                 <span className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-indigo-300 to-emerald-400">
-                  {metrics?.amplificationScore ?? '0.00'}
-                </span>
-                <span className="text-xs font-mono text-emerald-400 font-semibold">
-                  Entropy: {metrics?.systemEntropyPct ?? '0.20'}%
+                  {measured((metrics as any)?.amplificationScore)}
                 </span>
               </div>
               <p className="text-[11px] font-mono text-slate-400 mt-0.5">
@@ -346,8 +354,8 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
           }`}
         >
           <Terminal className="h-4 w-4" />
-          <span>VM Sandbox Runtime</span>
-          <span className="px-1.5 py-0.5 text-[10px] bg-sky-500/20 text-sky-300 rounded font-mono">Live V8</span>
+          <span>Sandbox runner</span>
+          <span className="px-1.5 py-0.5 text-[10px] bg-slate-700/60 text-slate-200 rounded font-mono">child process</span>
         </button>
 
         <button
@@ -400,18 +408,19 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
         >
           <RotateCw className="h-4 w-4" />
           <span>Recursion Loop (R_&#123;n+1&#125;)</span>
-          <span className="px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-mono">&Delta;E</span>
+          <span className="px-1.5 py-0.5 text-[10px] bg-slate-700/60 text-slate-300 rounded font-mono">AI text</span>
         </button>
       </div>
 
       {/* VIEW 1: 7-RUNG LADDER OVERVIEW */}
       {activeSubView === 'ladder' && (
         <div className="space-y-6">
+          <DemoDataNote>Rung counts include seeded sample records. They count rows in the local store; they do not measure anything.</DemoDataNote>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {rungsConfig.map((r) => {
               const Icon = r.icon;
               const rungData = (metrics?.rungs as any)?.[r.key];
-              const count = rungData?.count ?? 0;
+              const count = rungData?.count;
 
               return (
                 <div
@@ -438,52 +447,48 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                   </div>
 
                   <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
-                    <span className="text-xs font-mono text-slate-400">Total Count:</span>
-                    <span className={`text-xl font-mono font-extrabold ${r.color}`}>{count}</span>
+                    <span className="text-xs font-mono text-slate-400">Local count:</span>
+                    <span className={`text-xl font-mono font-extrabold ${r.color}`}>{measured(count)}</span>
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Realtime Substrate Attestation Summary */}
+          {/* What the invariants mean here */}
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl">
             <h3 className="text-base font-bold text-white mb-2 flex items-center space-x-2">
-              <ShieldCheck className="h-5 w-5 text-emerald-400" />
-              <span>Cryptographic Invariant Attestation Status</span>
+              <ShieldCheck className="h-5 w-5 text-slate-300" />
+              <span>What is enforced today</span>
             </h3>
-            <p className="text-xs text-slate-400 mb-4">
-              All 8 substrate layers are actively bound to HMAC-SHA256 non-repudiation proofs with zero unmonitored execution vectors.
-            </p>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-xs">
-              <div className="p-4 rounded-xl bg-slate-950 border border-emerald-500/30">
-                <div className="flex items-center space-x-2 text-emerald-400 mb-1">
-                  <CheckCircle2 className="h-4 w-4" />
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between text-slate-200 mb-1">
                   <span className="font-bold">Invariant 1 (Authority)</span>
+                  <EvidenceBadge label="CONFIGURED" />
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  Terminal 403 enforcement. Invalid or expired CAPPO credentials fail closed immediately. Zero permission hunting allowed.
+                  In governed mode, execute endpoints refuse (403/503) unless CAPPO answers APPROVED. In local-demo mode code runs without
+                  authorization. See the Veklom Fabric tab for the current mode.
                 </p>
               </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-sky-500/30">
-                <div className="flex items-center space-x-2 text-sky-400 mb-1">
-                  <CheckCircle2 className="h-4 w-4" />
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between text-slate-200 mb-1">
                   <span className="font-bold">Invariant 2 (Execution)</span>
+                  <EvidenceBadge label="DEMO" />
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  Transparent 503 fallback routing. If a physical node or enclave fails, HRMR reroutes execution with 0 authority drift.
+                  503 fallback is simulated over local node records. No remote node is contacted.
                 </p>
               </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-indigo-500/30">
-                <div className="flex items-center space-x-2 text-indigo-400 mb-1">
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span className="font-bold">PGL &amp; x402 Micropayments</span>
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between text-slate-200 mb-1">
+                  <span className="font-bold">Evidence &amp; settlement</span>
+                  <EvidenceBadge label="TARGET" />
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  All VM and HRMR executions produce a verifiable Proof Graph Ledger hash and settle gas over the x402 header protocol.
+                  Governed runs append an event to Gnomledger when PGL is configured. Local records are HMAC-signed JSON. Settlement
+                  (x402) is not implemented.
                 </p>
               </div>
             </div>
@@ -499,16 +504,16 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center space-x-2">
                   <Terminal className="h-5 w-5 text-sky-400" />
-                  <h2 className="text-base font-bold text-white">Topological VM Sandbox Runner</h2>
+                  <h2 className="text-base font-bold text-white">Sandbox runner</h2>
                 </div>
                 <span className="px-2 py-0.5 text-xs font-mono rounded bg-slate-800 text-slate-300 border border-slate-700">
-                  Non-Ambient V8 Context
+                  POST /api/substrate/sandbox/execute
                 </span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 text-xs font-mono">
                 <div>
-                  <label className="text-slate-400 block mb-1">Agent Identity (I)</label>
+                  <label className="text-slate-400 block mb-1">Agent identity record (subject)</label>
                   <select
                     value={selectedSandboxAgent}
                     onChange={(e) => setSelectedSandboxAgent(e.target.value)}
@@ -523,7 +528,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 </div>
 
                 <div>
-                  <label className="text-slate-400 block mb-1">Target Capability</label>
+                  <label className="text-slate-400 block mb-1">Capability</label>
                   <select
                     value={selectedCapability}
                     onChange={(e) => setSelectedCapability(e.target.value)}
@@ -538,24 +543,45 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 </div>
 
                 <div>
-                  <label className="text-slate-400 block mb-1">Containment Cell Type</label>
+                  <label className="text-slate-400 block mb-1">Runtime</label>
                   <select
                     value={selectedRuntime}
                     onChange={(e) => setSelectedRuntime(e.target.value as any)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="node_vm">Node V8 Isolated VM</option>
-                    <option value="docker_isolated">Docker Enclave Container</option>
-                    <option value="e2b_cloud_cell">E2B Bounded Cell</option>
+                    <option value="node_vm">Node child-process sandbox</option>
+                    <option value="docker_isolated" disabled>Container runtime — TARGET (not implemented)</option>
+                    <option value="e2b_cloud_cell" disabled>Remote cloud sandbox — TARGET (not implemented)</option>
                   </select>
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 text-xs font-mono">
+                <div>
+                  <label className="text-slate-400 block mb-1">Local grant record (not CAPPO)</label>
+                  <select
+                    value={grantId}
+                    onChange={(e) => setSelectedGrantId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500"
+                  >
+                    {grants.length === 0 && <option value={grantId}>{grantId}</option>}
+                    {grants.map((g) => (
+                      <option key={g.grantId} value={g.grantId}>
+                        {g.grantId}
+                        {hasNumber(g.expiresAt) && g.expiresAt < Date.now() ? ' (expired)' : ''}
+                        {g.isRevoked ? ' (revoked)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <DirectiveControl />
               </div>
 
               {/* Code Editor */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-mono text-slate-400">
-                  <span>Workload Script (JavaScript / Substrate VM API):</span>
-                  <span>Timeout: 3000ms | Memory: 128MB</span>
+                  <span>Workload script (JavaScript; `input` in, `output` out):</span>
+                  <span>timeout 3000 ms · 64 MB heap cap · network NOT restricted</span>
                 </div>
                 <textarea
                   value={sandboxCode}
@@ -583,7 +609,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-indigo-600/30 disabled:opacity-50"
                 >
                   <Play className={`h-4 w-4 ${sandboxRunning ? 'animate-spin' : ''}`} />
-                  <span>{sandboxRunning ? 'Executing in Substrate VM...' : 'Execute in Isolated Sandbox'}</span>
+                  <span>{sandboxRunning ? 'Running...' : 'Run in sandbox'}</span>
                 </button>
               </div>
             </div>
@@ -596,7 +622,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-bold text-white flex items-center space-x-2">
                     <Code2 className="h-4 w-4 text-emerald-400" />
-                    <span>Realtime Execution Results</span>
+                    <span>Execution result</span>
                   </h3>
                   {sandboxResult && (
                     <span
@@ -611,33 +637,51 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                   )}
                 </div>
 
+                {sandboxError && (
+                  <div className="mb-3 p-3 rounded-lg border border-rose-500/30 bg-rose-950/20 text-xs font-mono text-rose-200">
+                    Sandbox request failed: {sandboxError}
+                  </div>
+                )}
+                {sandboxMeta && (sandboxMeta.data?.governance || sandboxMeta.problem) && (
+                  <div className="mb-4" data-testid="governance-block">
+                    <GovernanceBlock
+                      governance={sandboxMeta.data?.governance}
+                      status={sandboxMeta.status}
+                      problem={sandboxMeta.status >= 400 && sandboxMeta.data ? sandboxMeta.data : null}
+                    />
+                  </div>
+                )}
                 {sandboxResult ? (
                   <div className="space-y-4 text-xs font-mono">
                     {/* Execution Metrics Bar */}
                     <div className="grid grid-cols-2 gap-2 p-3 bg-slate-950 rounded-lg border border-slate-800">
                       <div>
-                        <span className="text-slate-400 block text-[10px]">CPU DURATION:</span>
-                        <span className="text-emerald-400 font-bold">{sandboxResult.executionDurationMs} ms</span>
+                        <span className="text-slate-400 block text-[10px]">WALL-CLOCK (in child):</span>
+                        <span className="text-slate-200 font-bold">{measured((sandboxResult as any).executionDurationMs, ' ms')}</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block text-[10px]">HEAP DELTA:</span>
-                        <span className="text-sky-400 font-bold">{(sandboxResult.memoryUsageBytes / 1024).toFixed(1)} KB</span>
+                        <span className="text-slate-400 block text-[10px]">CHILD PROCESS MEMORY:</span>
+                        <span className="text-slate-200 font-bold">
+                          {hasNumber((sandboxResult as any).memoryUsageBytes)
+                            ? `${((sandboxResult as any).memoryUsageBytes / 1024).toFixed(1)} KB`
+                            : 'not measured'}
+                        </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block text-[10px]">x402 GAS SETTLED:</span>
-                        <span className="text-amber-400 font-bold">{sandboxResult.x402GasSettled} VEK</span>
+                        <span className="text-slate-400 block text-[10px]">SETTLEMENT:</span>
+                        <span className="text-slate-400">not implemented</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block text-[10px]">RECEIPT ID:</span>
-                        <span className="text-indigo-300 truncate block">{sandboxResult.receipt.receiptId}</span>
+                        <span className="text-slate-400 block text-[10px]">LOCAL RECEIPT ID:</span>
+                        <span className="text-indigo-300 truncate block">{sandboxResult.receipt?.receiptId ?? '—'}</span>
                       </div>
                     </div>
 
                     {/* Stdout Logs */}
                     <div>
-                      <span className="text-slate-400 block mb-1 text-[11px]">CONTAINER STDOUT:</span>
+                      <span className="text-slate-400 block mb-1 text-[11px]">STDOUT:</span>
                       <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-slate-300 max-h-32 overflow-y-auto space-y-1">
-                        {sandboxResult.stdout?.length > 0 ? (
+                        {Array.isArray(sandboxResult.stdout) && sandboxResult.stdout.length > 0 ? (
                           sandboxResult.stdout.map((line, idx) => (
                             <p key={idx} className="text-emerald-300 font-mono text-[11px]">
                               &gt; {line}
@@ -659,8 +703,8 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
 
                     {/* Cryptographic Proof Signature */}
                     <div className="p-3 bg-slate-950/80 rounded-lg border border-indigo-500/30">
-                      <span className="text-indigo-400 block font-bold text-[11px] mb-1">
-                        PGL Cryptographic Proof:
+                      <span className="text-slate-300 block font-bold text-[11px] mb-1">
+                        Local record signature (HMAC, not canonical PGL):
                       </span>
                       <p className="text-slate-300 text-[10px] break-all">{sandboxResult.pglProofSignature}</p>
                     </div>
@@ -669,7 +713,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                   <div className="p-8 text-center text-slate-500 text-xs font-mono flex flex-col items-center justify-center space-y-2">
                     <Terminal className="h-8 w-8 text-slate-600 mb-1" />
                     <p>No execution recorded yet.</p>
-                    <p className="text-[11px] text-slate-400">Click &quot;Execute in Isolated Sandbox&quot; to run real code in the V8 engine.</p>
+                    <p className="text-[11px] text-slate-400">Click &quot;Run in sandbox&quot; to run the script in a child Node process.</p>
                   </div>
                 )}
               </div>
@@ -685,10 +729,11 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
             <div>
               <h2 className="text-base font-bold text-white flex items-center space-x-2">
                 <FileCheck2 className="h-5 w-5 text-sky-400" />
-                <span>Rung 2: Cryptographic Authorization Receipts (R)</span>
+                <span>Rung 2: Local authorization receipts (R)</span>
               </h2>
               <p className="text-xs text-slate-400">
-                Non-replayable, single-use authorization receipts signed with SHA-256 digests and cryptographic nonces.
+                Receipts issued by this server from local grants, with a SHA-256 scope digest and an HMAC signature made with a local
+                key. They are not CAPPO authorizations.
               </p>
             </div>
           </div>
@@ -699,24 +744,25 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                   <div className="flex items-center space-x-2">
                     <span className="font-bold text-sky-400">{rcpt.receiptId}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        rcpt.status === 'active'
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {rcpt.status.toUpperCase()}
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">
+                      {hasNumber(rcpt.expiresAt) && rcpt.expiresAt < Date.now() ? 'EXPIRED' : String(rcpt.status ?? 'unknown').toUpperCase()}
                     </span>
+                    <RecordBadge record={rcpt} fallback="UNVERIFIED" />
                   </div>
-                  <span className="text-slate-400 text-[10px]">Expires in: {Math.max(0, Math.floor((rcpt.expiresAt - Date.now()) / 60000))}m</span>
+                  <span className="text-slate-400 text-[10px]">
+                    {hasNumber(rcpt.expiresAt)
+                      ? rcpt.expiresAt < Date.now()
+                        ? `expired ${new Date(rcpt.expiresAt).toLocaleString()}`
+                        : `expires in ${Math.floor((rcpt.expiresAt - Date.now()) / 60000)}m`
+                      : 'expiry unknown'}
+                  </span>
                 </div>
 
                 <div className="space-y-1 text-slate-300 text-[11px]">
                   <p><span className="text-slate-500">Subject:</span> {rcpt.subject}</p>
                   <p><span className="text-slate-500">Grant ID:</span> {rcpt.cappoGrantId}</p>
                   <p><span className="text-slate-500">Target Capability:</span> {rcpt.targetCapability}</p>
-                  <p><span className="text-slate-500">Scope Digest:</span> {rcpt.scopeDigest.slice(0, 22)}...</p>
+                  <p><span className="text-slate-500">Scope Digest:</span> {String(rcpt.scopeDigest ?? '').slice(0, 22)}...</p>
                   <p><span className="text-slate-500">Nonce:</span> {rcpt.nonce}</p>
                   <p><span className="text-slate-500">Signature:</span> {rcpt.signature}</p>
                 </div>
@@ -727,14 +773,22 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                     className="px-3 py-1 bg-sky-600/20 hover:bg-sky-600/40 text-sky-300 border border-sky-500/30 rounded text-xs transition cursor-pointer flex items-center space-x-1.5"
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>Cryptographically Verify Receipt</span>
+                    <span>Check local signature</span>
                   </button>
 
-                  {receiptToVerify === rcpt.receiptId && receiptVerificationResult && (
-                    <span className="text-[11px] text-emerald-400 font-bold">
-                      VERIFIED 100%
-                    </span>
-                  )}
+                  {receiptToVerify === rcpt.receiptId && receiptVerificationResult && (() => {
+                    const v = receiptVerificationResult.verification ?? {};
+                    const valid = v.valid ?? receiptVerificationResult.success;
+                    return (
+                      <span
+                        className={`text-[11px] font-bold ${valid === true ? 'text-emerald-400' : 'text-rose-400'}`}
+                        title={v.reason ?? v.details ?? ''}
+                      >
+                        valid: {String(valid)}
+                        {v.reason ? ` — ${v.reason}` : ''}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
@@ -749,14 +803,15 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center space-x-2">
                 <Ban className="h-5 w-5 text-rose-400" />
-                <h2 className="text-base font-bold text-white">Rung 3: Blocked Intent &amp; Fail-Closed Invariant Simulator</h2>
+                <h2 className="text-base font-bold text-white">Rung 3: Blocked intents (403 records)</h2>
               </div>
               <span className="px-2 py-0.5 text-xs font-mono rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
                 HTTP 403 Fail-Closed Terminal
               </span>
             </div>
             <p className="text-xs text-slate-300 max-w-3xl mb-4">
-              Demonstrate Invariant 1: when an unauthorized actor, expired grant, or anomalous intent attempts invocation, the substrate immediately terminates the call with an RFC 9457 Problem Details object with zero permission hunting.
+              Records of 403 refusals. Seeded entries are sample data; the button below adds a simulated refusal record (no real
+              request is made). Quarantine is not implemented.
             </p>
 
             <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
@@ -784,7 +839,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 disabled={simulatingBlock}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg transition cursor-pointer shadow-lg shadow-rose-600/20"
               >
-                Simulate 403 Terminal Refusal
+                Add simulated 403 record
               </button>
             </div>
           </div>
@@ -793,7 +848,10 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
             {metrics?.latestBlocked?.map((blk) => (
               <div key={blk.id} className="bg-slate-900 border border-rose-500/30 rounded-xl p-4 font-mono text-xs space-y-2">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                  <span className="font-bold text-rose-400">{blk.id}</span>
+                  <span className="font-bold text-rose-400 flex items-center gap-2">
+                    {blk.id}
+                    <RecordBadge record={blk} fallback="UNVERIFIED" />
+                  </span>
                   <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] font-bold">
                     HTTP {blk.httpStatus} DENIAL
                   </span>
@@ -803,7 +861,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                   <p><span className="text-slate-500">Subject:</span> {blk.subject}</p>
                   <p><span className="text-slate-500">Attempted Capability:</span> {blk.attemptedCapability}</p>
                   <p><span className="text-slate-500">Reason:</span> <strong className="text-rose-400">{blk.reason}</strong></p>
-                  <p><span className="text-slate-500">Problem Detail:</span> {blk.problemDetails.detail}</p>
+                  <p><span className="text-slate-500">Problem Detail:</span> {blk.problemDetails?.detail ?? '—'}</p>
                 </div>
               </div>
             ))}
@@ -818,10 +876,10 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
             <div>
               <h2 className="text-base font-bold text-white flex items-center space-x-2">
                 <Key className="h-5 w-5 text-purple-400" />
-                <span>Rung 6: Durable Agent Identities (I)</span>
+                <span>Rung 6: Agent identity records (I)</span>
               </h2>
               <p className="text-xs text-slate-400">
-                Machine-native agent identities registered to the substrate with persistent trust tiers and evidence chains.
+                Identity records in the local store. Trust tiers are declared, not verified; the "public key" is an id digest, not a key.
               </p>
             </div>
           </div>
@@ -831,17 +889,20 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
               <div key={id.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 font-mono text-xs space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                   <span className="font-bold text-purple-300 text-sm">{id.name}</span>
-                  <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30">
-                    {id.trustTier}
+                  <span className="flex items-center gap-1">
+                    <RecordBadge record={id} fallback="DEMO" />
+                    <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30">
+                      {id.trustTier} (declared)
+                    </span>
                   </span>
                 </div>
 
                 <div className="space-y-1.5 text-slate-300 text-[11px]">
                   <p><span className="text-slate-500">ID:</span> {id.id}</p>
-                  <p><span className="text-slate-500">Public Key:</span> {id.publicKey.slice(0, 24)}...</p>
-                  <p><span className="text-slate-500">Evidence Chain Length:</span> <strong className="text-emerald-400">{id.evidenceChainLength}</strong> blocks</p>
+                  <p><span className="text-slate-500">ID digest:</span> {String(id.publicKey ?? '').slice(0, 24)}...</p>
+                  <p><span className="text-slate-500">Local record count:</span> <strong className="text-slate-200">{measured(id.evidenceChainLength)}</strong></p>
                   <p><span className="text-slate-500">Recursion Depth:</span> {id.recursionDepth}</p>
-                  <p><span className="text-slate-500">Allowed Capabilities:</span> {id.allowedCapabilities.join(', ')}</p>
+                  <p><span className="text-slate-500">Allowed Capabilities:</span> {(id.allowedCapabilities ?? []).join(', ')}</p>
                   <p><span className="text-slate-500">Runtime Preference:</span> {id.sandboxRuntimePreference}</p>
                 </div>
               </div>
@@ -857,16 +918,13 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center space-x-2">
                 <RotateCw className="h-5 w-5 text-emerald-400" />
-                <h2 className="text-base font-bold text-white">
-                  Recursion Loop Engine: R_&#123;n+1&#125; = R_n + &Delta;E
-                </h2>
+                <h2 className="text-base font-bold text-white">Recursion step</h2>
               </div>
-              <span className="px-2 py-0.5 text-xs font-mono rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                Mathematical Self-Optimization
-              </span>
+              <EvidenceBadge label="UNVERIFIED" title="AI-generated text" />
             </div>
             <p className="text-xs text-slate-300 max-w-3xl mb-4">
-              Execute iterative optimization cycles where each step increments verifiable evidence length &Delta;E, registers an immutable PGL record, and updates the agent&apos;s durable identity.
+              Each step increments the agent record's counters and asks Gemini (when a key is configured) for a one-sentence suggestion.
+              The suggestion is AI-generated text: nothing is measured, optimized or proven by it.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs mb-4">
@@ -903,7 +961,7 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
                 className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center space-x-2 shadow-lg shadow-emerald-600/30"
               >
                 <RotateCw className={`h-4 w-4 ${recursionRunning ? 'animate-spin' : ''}`} />
-                <span>{recursionRunning ? 'Evaluating Recursion...' : 'Execute Recursion Cycle (Step + \u0394E)'}</span>
+                <span>{recursionRunning ? 'Running step...' : 'Run recursion step'}</span>
               </button>
             </div>
           </div>
@@ -915,20 +973,24 @@ export const VeklomAmplificationEngine: React.FC<VeklomAmplificationEngineProps>
               recursionLog.map((entry, idx) => (
                 <div key={idx} className="bg-slate-900 border border-slate-800 rounded-xl p-4 font-mono text-xs space-y-2">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                    <span className="text-emerald-400 font-bold">
-                      Iteration Step &bull; Depth {entry.agentIdentity?.recursionDepth}
+                    <span className="text-slate-200 font-bold">
+                      Step &bull; depth {entry?.agentIdentity?.recursionDepth ?? '?'}
                     </span>
-                    <span className="text-slate-400 text-[10px]">
-                      &Delta;E: +{entry.deltaE} | Gas: {entry.pglRecord?.x402GasSettled} VEK
+                    <span className="flex items-center gap-2 text-slate-400 text-[10px]">
+                      <span>counter +{entry?.deltaE ?? '?'}</span>
+                      {entry?.source && <span>source: {entry.source === 'no-model' ? 'no model configured' : entry.source}</span>}
+                      <EvidenceBadge label={entry?.evidenceLabel} fallback="UNVERIFIED" />
                     </span>
                   </div>
-                  <p className="text-slate-200 text-[11px] leading-relaxed">{entry.recommendation}</p>
-                  <p className="text-[10px] text-slate-500">PGL Sig: {entry.pglRecord?.pglSignature}</p>
+                  <p className="text-[10px] text-slate-500">AI-generated suggestion (unverified):</p>
+                  <p className="text-slate-200 text-[11px] leading-relaxed">
+                    {entry?.recommendation ?? entry?.detail ?? entry?.error ?? 'no text returned'}
+                  </p>
                 </div>
               ))
             ) : (
               <div className="p-6 text-center text-slate-500 font-mono text-xs bg-slate-900/50 rounded-xl border border-slate-800">
-                Click &quot;Execute Recursion Cycle&quot; to perform an iterative state evolution cycle.
+                No recursion steps run in this session.
               </div>
             )}
           </div>

@@ -12,6 +12,7 @@ import {
   verifyActionEvidence,
   generateActionEvidence,
   verifyCanonicalAuthority,
+  computeScopeTokenDigest,
   confirmActionExecution,
   executeInIsolatedVMSandbox,
 } from './cryptoUtils.js';
@@ -26,7 +27,9 @@ import {
   ContainerRuntimeAdapter,
   VkgRuntimeAdapter,
   OfflineRuntimeAdapter,
+  decideRoute,
 } from './runtimeAdapters.js';
+import type { EvidenceLabel } from '../types.js';
 
 export interface AdversarialTestResult {
   testId: string;
@@ -37,6 +40,7 @@ export interface AdversarialTestResult {
   passed: boolean;
   durationMs: number;
   details: string;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface AdversarialTestSuiteReport {
@@ -46,7 +50,17 @@ export interface AdversarialTestSuiteReport {
   failed: number;
   allPassed: boolean;
   tests: AdversarialTestResult[];
+  /** Results were computed just now by running repo code in this process. */
+  evidenceLabel: EvidenceLabel;
+  scope: string;
 }
+
+/*
+ * Scope: these are unit checks of COMPUTLESS's own code, run in-process. They
+ * are VERIFIED_REPO (computed now from repo code), not production proof. The
+ * "authority" objects below are locally built scope tokens used as fixtures;
+ * they are not CAPPO authority and are never called canonical.
+ */
 
 export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteReport> {
   const tests: AdversarialTestResult[] = [];
@@ -74,7 +88,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       passed,
       durationMs: Date.now() - start,
       details: passed
-        ? 'Verified that exact HMAC matching is enforced and mock prefix acceptance is eliminated.'
+        ? 'Exact local HMAC matching is enforced; prefix-only signatures are rejected.'
         : 'CRITICAL FAILURE: Forged signature was falsely accepted!',
     });
   }
@@ -89,13 +103,13 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
     const passed = check.valid === false && check.status === 403;
     tests.push({
       testId: 'ADV-02',
-      name: 'Fail-Closed on Missing Authority',
+      name: 'Fail-Closed on Missing Scope Token',
       category: 'AUTHORITY_BOUNDS',
-      expectedOutcome: 'Missing authority fails closed with HTTP 403 and valid: false',
+      expectedOutcome: 'Missing scope token fails closed with 403 and valid: false',
       actualOutcome: `Valid: ${check.valid}, Status: ${check.status}, Error: ${check.error}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate execution refuses ambient execution without verified authority.',
+      details: 'The local scope-token check fails closed. (Execution authority itself is CAPPO, checked by fabric.ts.)',
     });
   }
 
@@ -114,26 +128,19 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    expiredAuthority.authorityDigest = hashPayload({
-      executionId: expiredAuthority.executionId,
-      workspaceId: expiredAuthority.workspaceId,
-      mountId: expiredAuthority.mountId,
-      capabilityId: expiredAuthority.capabilityId,
-      allowedAction: expiredAuthority.allowedAction,
-      runtimeProfile: expiredAuthority.runtimeProfile,
-    });
+    expiredAuthority.authorityDigest = computeScopeTokenDigest(expiredAuthority);
 
     const check = verifyCanonicalAuthority(expiredAuthority);
     const passed = check.valid === false && check.status === 403;
     tests.push({
       testId: 'ADV-03',
-      name: 'Expired Authority Rejection',
+      name: 'Expired Scope Token Rejection',
       category: 'AUTHORITY_BOUNDS',
       expectedOutcome: 'Expired authority token triggers 403 refusal',
       actualOutcome: `Valid: ${check.valid}, Error: ${check.error}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate rejected stale execution authority past timestamp bounds.',
+      details: 'The scope-token check rejected a token past its expiry.',
     });
   }
 
@@ -152,14 +159,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
     const check = verifyCanonicalAuthority(authority, 'cap-rf-telecom');
     const passed = check.valid === false && check.status === 403;
@@ -171,7 +171,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Valid: ${check.valid}, Error: ${check.error}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate enforced strict capability boundary.',
+      details: 'The scope-token check enforced the capability bound.',
     });
   }
 
@@ -190,14 +190,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
     const check = verifyCanonicalAuthority(authority, 'cap-compute-v1', 'delete_database');
     const passed = check.valid === false && check.status === 403;
@@ -209,7 +202,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Valid: ${check.valid}, Error: ${check.error}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate verified fine-grained action scope.',
+      details: 'The scope-token check enforced the action bound.',
     });
   }
 
@@ -218,19 +211,19 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
   // -------------------------------------------------------------
   {
     const start = Date.now();
-    // Simulate routing engine decision on 403
-    const isAuthorityValid = false;
-    const allowFallbackSearch = isAuthorityValid ? true : false;
-    const passed = allowFallbackSearch === false;
+    // Exercises decideRoute, the same function /api/substrate/route uses.
+    const decision = decideRoute({ authorityValid: false, primaryAvailable: false, fallbackAvailable: true });
+    const allowFallbackSearch = decision.fallbackSearched;
+    const passed = decision.outcome === 'TERMINAL_403' && allowFallbackSearch === false;
     tests.push({
       testId: 'ADV-06',
       name: 'Invariant 1: Authority 403 Terminal Denial',
       category: 'INVARIANT_ROUTING',
       expectedOutcome: 'Authority 403 triggers terminal failure with ZERO fallback search (permission hunting blocked)',
-      actualOutcome: `Allow fallback search: ${allowFallbackSearch}`,
+      actualOutcome: `Outcome: ${decision.outcome}, fallback searched: ${allowFallbackSearch}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'HRMR engine blocked permission hunting when authority failed.',
+      details: 'decideRoute returns a terminal 403 without searching for a fallback when authority fails.',
     });
   }
 
@@ -249,30 +242,24 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
-    const primaryNodeOnline = false; // 503 outage
-    let reroutedNode = primaryNodeOnline ? 'node-primary' : 'node-fallback';
-    const authorityBefore = authority.authorityDigest;
-    const authorityAfter = authority.authorityDigest;
+    const authorityBefore = JSON.stringify(authority);
+    const decision = decideRoute({ authorityValid: true, primaryAvailable: false, fallbackAvailable: true });
+    const noFallback = decideRoute({ authorityValid: true, primaryAvailable: false, fallbackAvailable: false });
+    const authorityAfter = JSON.stringify(authority);
+    const reroutedNode = decision.outcome;
 
-    const passed = reroutedNode === 'node-fallback' && authorityBefore === authorityAfter;
+    const passed = decision.outcome === 'FALLBACK' && noFallback.outcome === 'UNAVAILABLE_503' && authorityBefore === authorityAfter;
     tests.push({
       testId: 'ADV-07',
       name: 'Invariant 2: 503 Fallback Preserves Authority Identity',
       category: 'INVARIANT_ROUTING',
       expectedOutcome: 'Node 503 reroutes execution while authority token remains strictly unchanged (0 drift)',
-      actualOutcome: `Rerouted to: ${reroutedNode}, Authority Match: ${authorityBefore === authorityAfter}`,
+      actualOutcome: `Outcome: ${reroutedNode}, without fallback: ${noFallback.outcome}, scope token unchanged: ${authorityBefore === authorityAfter}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Execution location moved freely while cryptographic authority remained invariant.',
+      details: 'decideRoute reroutes on outage (503 when no fallback) and takes no authority input, so the token cannot drift. Routing only; nothing is executed remotely.',
     });
   }
 
@@ -299,35 +286,40 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
     const hwState = unverifiedCert.dimensions.hardwareTelemetry.hardwareProofState;
     const runtimeObs = unverifiedCert.dimensions.resourceContainment.runtimeObservation;
 
-    // Verify verified path
-    const verifiedObservationReq = {
+    // A caller CLAIMING hardware/isolation evidence must not be promoted to
+    // VERIFIED: COMPUTLESS has no external verifier. (This assertion used to
+    // require promotion to VERIFIED, which asserted something false.)
+    const claimedObservationReq = {
       ...unverifiedObservationReq,
       transactionId: 'tx-honest-002',
       hardwareProofProvided: true,
       isolationVerifiedByEvidence: true,
-      externalEvidenceSource: 'TPM_2_0_ENCLAVE_ATTESTATION',
+      externalEvidenceSource: 'caller-claimed-attestation',
     };
-    const verifiedCert = confirmActionExecution(verifiedObservationReq);
-    const verifiedRuntimeObs = verifiedCert.dimensions.resourceContainment.runtimeObservation;
+    const claimedCert = confirmActionExecution(claimedObservationReq);
+    const claimedRuntimeObs = claimedCert.dimensions.resourceContainment.runtimeObservation;
+    const claimedHw = claimedCert.dimensions.hardwareTelemetry;
 
     const passed =
-      (hwState === 'UNAVAILABLE' || hwState === 'OBSERVED') &&
-      (runtimeObs.state === 'UNAVAILABLE' || runtimeObs.state === 'OBSERVED') &&
+      hwState === 'UNAVAILABLE' &&
+      runtimeObs.state === 'UNAVAILABLE' &&
       runtimeObs.verifiedByEvidence === false &&
-      verifiedRuntimeObs.state === 'VERIFIED' &&
-      verifiedRuntimeObs.verifiedByEvidence === true;
+      claimedRuntimeObs.state !== 'VERIFIED' &&
+      claimedRuntimeObs.verifiedByEvidence === false &&
+      claimedHw.status === 'UNAVAILABLE' &&
+      claimedHw.uptimeAttestationPct === null;
 
     tests.push({
       testId: 'ADV-08',
-      name: 'Honest Telemetry & RuntimeObservation Declassification',
+      name: 'Caller-Claimed Hardware Evidence Is Not Accepted',
       category: 'CRYPTOGRAPHIC_INTEGRITY',
-      expectedOutcome: 'RuntimeObservation strictly defaults to UNAVAILABLE/OBSERVED until verified by external evidence',
-      actualOutcome: `Unverified Obs State: ${runtimeObs.state}, Verified Obs State: ${verifiedRuntimeObs.state}`,
+      expectedOutcome: 'Without observation: UNAVAILABLE. With caller-claimed attestation flags: still not VERIFIED, hardware UNAVAILABLE, uptime null',
+      actualOutcome: `No-claim state: ${runtimeObs.state}, claimed state: ${claimedRuntimeObs.state}, claimed hardware: ${claimedHw.status}`,
       passed,
       durationMs: Date.now() - start,
       details: passed
-        ? 'Confirmed declassification: RuntimeObservation defaults to UNAVAILABLE and only promotes to VERIFIED with genuine external evidence.'
-        : 'CRITICAL FAILURE: False observation state was generated!',
+        ? 'Caller-asserted evidence flags are recorded as unaccepted claims; nothing is promoted to VERIFIED.'
+        : 'FAILURE: a caller claim was promoted to a verified state.',
     });
   }
 
@@ -347,13 +339,13 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
     const passed = vmRes.status === 'TERMINATED_TIMEOUT';
     tests.push({
       testId: 'ADV-09',
-      name: 'VM Timeout Containment',
+      name: 'Child-Process Sandbox Timeout',
       category: 'RUNTIME_CONTAINMENT',
       expectedOutcome: 'Infinite loop script terminated cleanly with TERMINATED_TIMEOUT',
       actualOutcome: `Status: ${vmRes.status}, Duration: ${vmRes.durationMs}ms`,
       passed,
       durationMs: Date.now() - start,
-      details: 'In-process fault boundary terminated runaway execution.',
+      details: 'The child-process sandbox terminated a runaway workload (wall-clock timeout).',
     });
   }
 
@@ -385,7 +377,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Valid: ${validation.valid}, Error: ${validation.error}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate verified immutable .vkg package digest before loading.',
+      details: 'The recomputed SHA-256 content digest detected the modified handler.',
     });
   }
 
@@ -405,14 +397,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
     const vkgAdapter = new VkgRuntimeAdapter([taxPkg]);
     const req: GovernedRuntimeRequest = {
@@ -432,7 +417,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Status: ${res.status}, Output: ${JSON.stringify(res.outputData)}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Deterministic .vkg executed cleanly inside bounded memory envelope.',
+      details: 'The .vkg handler produced the expected output in the child-process sandbox.',
     });
   }
 
@@ -594,7 +579,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Executions remaining: ${validLease.executionsRemaining}, Journal entries: ${journal.length}, Nonce: ${validLease.currentNonce}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Verified local substrate journal logging for subsequent reconnection & reconciliation.',
+      details: 'Quota decremented, nonce advanced and the observation journaled locally (no reconciliation backend exists).',
     });
   }
 
@@ -633,7 +618,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       actualOutcome: `Valid: ${tamperedReport.valid}, TamperDetected: ${tamperedReport.tamperDetected}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Substrate cryptographic audit engine detected payload alteration.',
+      details: 'Local verifier detected the payload alteration (local HMAC; not canonical PGL).',
     });
   }
 
@@ -654,14 +639,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    vkgAuth.authorityDigest = hashPayload({
-      executionId: vkgAuth.executionId,
-      workspaceId: vkgAuth.workspaceId,
-      mountId: vkgAuth.mountId,
-      capabilityId: vkgAuth.capabilityId,
-      allowedAction: vkgAuth.allowedAction,
-      runtimeProfile: vkgAuth.runtimeProfile,
-    });
+    vkgAuth.authorityDigest = computeScopeTokenDigest(vkgAuth);
 
     const vkgRes = await dispatcher.dispatch({
       authority: vkgAuth,
@@ -684,20 +662,16 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
   }
 
   // -------------------------------------------------------------
-  // Test 17: ContainerRuntimeAdapter Interchangeable Execution
+  // Test 17: ContainerRuntimeAdapter reports its real boundary
+  // (Previously asserted cgroup/namespace containment evidence that did not exist.)
   // -------------------------------------------------------------
   {
     const start = Date.now();
-    const containerAdapter = new ContainerRuntimeAdapter({
-      containerImage: 'ghcr.io/computless/isolated-runner:v2',
-      cgroupMemoryLimitBytes: 134217728, // 128MB
-      networkEgressDisabled: true,
-      externalEvidenceSource: 'CGROUP_V2_NAMESPACE_SANDBOX_EVIDENCE',
-    });
+    const containerAdapter = new ContainerRuntimeAdapter();
 
     const authority: CanonicalExecutionAuthority = {
       executionId: 'exec-container-01',
-      workspaceId: 'ws-prod-01',
+      workspaceId: 'ws-test',
       mountId: 'mnt-container-01',
       capabilityId: 'cap-compute-v1',
       allowedAction: 'run_isolated_job',
@@ -705,14 +679,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
     const containerRes = await containerAdapter.execute({
       authority,
@@ -720,26 +687,33 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       code: `
         const input = context.inputPayload || {};
         output.processedCount = (input.records || 0) * 2;
-        output.status = 'CONTAINER_COMPLETE';
+        output.status = 'COMPLETE';
       `,
     });
 
-    const passed =
-      containerRes.status === 'SUCCESS' &&
+    const boundary = (containerRes.sandboxBoundary || {}) as Record<string, unknown>;
+    const ranCorrectly = containerRes.status === 'SUCCESS' && containerRes.outputData.processedCount === 100;
+    const honestBoundary =
       containerRes.adapterType === 'ContainerRuntimeAdapter' &&
-      containerRes.isolationLevel === 'CONTAINMENT_SANDBOX' &&
-      containerRes.externalEvidenceSource === 'CGROUP_V2_NAMESPACE_SANDBOX_EVIDENCE' &&
-      containerRes.outputData.processedCount === 100;
+      containerRes.isolationLevel === 'PROCESS_ISOLATION' &&
+      boundary.kind === 'node-child-process' &&
+      boundary.cgroups === false &&
+      boundary.network === 'NOT restricted' &&
+      containerRes.externalEvidenceSource === undefined;
+    const passed = ranCorrectly && honestBoundary;
 
     tests.push({
       testId: 'ADV-17',
-      name: 'ContainerRuntimeAdapter Containment Sandbox Execution',
+      name: 'ContainerRuntimeAdapter Reports Its Real Boundary (no container)',
       category: 'RUNTIME_CONTAINMENT',
-      expectedOutcome: 'ContainerRuntimeAdapter executes within cgroup sandbox, returning containment evidence source',
-      actualOutcome: `Status: ${containerRes.status}, Isolation: ${containerRes.isolationLevel}, Adapter: ${containerRes.adapterType}`,
+      expectedOutcome:
+        'Runs the workload correctly AND reports the child-process sandbox: PROCESS_ISOLATION, cgroups=false, network NOT restricted, no external evidence source',
+      actualOutcome: `Status: ${containerRes.status}, processedCount: ${containerRes.outputData.processedCount}, isolation: ${containerRes.isolationLevel}, boundary: ${boundary.kind}, cgroups: ${boundary.cgroups}, network: ${boundary.network}, evidenceSource: ${containerRes.externalEvidenceSource ?? 'none'}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'ContainerRuntimeAdapter cleanly decoupled and executed without mock reliance.',
+      details: passed
+        ? 'No container is started; the adapter ran in the child-process sandbox and said so. Container isolation remains a TARGET.'
+        : `FAILURE: ${ranCorrectly ? 'adapter misreported its boundary' : 'workload did not run correctly'}.`,
     });
   }
 
@@ -760,14 +734,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       authorityDigest: '',
       runtimeProfile: 'CONNECTED',
     };
-    authority.authorityDigest = hashPayload({
-      executionId: authority.executionId,
-      workspaceId: authority.workspaceId,
-      mountId: authority.mountId,
-      capabilityId: authority.capabilityId,
-      allowedAction: authority.allowedAction,
-      runtimeProfile: authority.runtimeProfile,
-    });
+    authority.authorityDigest = computeScopeTokenDigest(authority);
 
     const req: GovernedRuntimeRequest = {
       authority,
@@ -790,11 +757,39 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       testId: 'ADV-18',
       name: 'Interchangeable RuntimeAdapter Dispatching',
       category: 'RUNTIME_CONTAINMENT',
-      expectedOutcome: 'Dispatcher dynamically switches execution backends between NodeVmRuntimeAdapter and ContainerRuntimeAdapter',
+      expectedOutcome: 'Dispatcher selects the requested adapter class; both run in the same child-process sandbox',
       actualOutcome: `Container: ${containerResult.adapterType}, NodeVM: ${nodeVmResult.adapterType}`,
       passed,
       durationMs: Date.now() - start,
-      details: 'Interchangeable backends verified under identical authority constraints.',
+      details: 'Adapter selection works. Both adapters use the same boundary (no container backend exists).',
+    });
+  }
+
+  // -------------------------------------------------------------
+  // Test 19: Empty scope-token digest fails closed
+  // -------------------------------------------------------------
+  {
+    const start = Date.now();
+    const check = verifyCanonicalAuthority({
+      executionId: 'exec-empty-digest',
+      workspaceId: 'ws-test',
+      mountId: 'mnt-test',
+      capabilityId: 'cap-compute-v1',
+      allowedAction: 'compute',
+      expiresAt: Date.now() + 60000,
+      authorityDigest: '',
+      runtimeProfile: 'CONNECTED',
+    });
+    const passed = check.valid === false && check.status === 403;
+    tests.push({
+      testId: 'ADV-19',
+      name: 'Empty Scope-Token Digest Fails Closed',
+      category: 'AUTHORITY_BOUNDS',
+      expectedOutcome: 'A token with an empty digest is rejected (valid: false, 403)',
+      actualOutcome: `Valid: ${check.valid}, Status: ${check.status}, Error: ${check.error}`,
+      passed,
+      durationMs: Date.now() - start,
+      details: 'Previously an empty digest skipped the integrity check entirely.',
     });
   }
 
@@ -807,6 +802,9 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
     passed: passedCount,
     failed: failedCount,
     allPassed: failedCount === 0,
-    tests,
+    tests: tests.map((t) => ({ ...t, evidenceLabel: 'VERIFIED_REPO' as const })),
+    evidenceLabel: 'VERIFIED_REPO',
+    scope:
+      "Unit checks of COMPUTLESS repo code run in this process just now. They test local logic (scope tokens, local HMAC, sandbox, .vkg digests); they are not production, CAPPO or PGL verification.",
   };
 }

@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, Layers, ShieldCheck, RefreshCw, Cpu, Globe, Lock, Terminal, Zap, Check } from 'lucide-react';
+import { X, Layers, Info } from 'lucide-react';
+import { EvidenceBadge, type EvidenceLabel } from './EvidenceBadge';
 
 interface ArchitectureStackModalProps {
   isOpen: boolean;
@@ -12,62 +13,82 @@ export const ArchitectureStackModal: React.FC<ArchitectureStackModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const stackLayers = [
+  const stackLayers: { num: number; name: string; components: string; color: string; description: string; label: EvidenceLabel; status: string }[] = [
     {
       num: 8,
       name: 'EVIDENCE, MEASUREMENT & SETTLEMENT',
-      components: 'PGL Cryptographic Proof Ledger | VNP Metrics | x402 Micropayment Gas',
+      components: 'PGL / Gnomledger events | VNP metrics | x402 settlement',
       color: 'border-amber-500/40 text-amber-300 bg-amber-950/20',
-      description: 'Produces SHA-256 state transition signatures and handles micro-metered gas finality.',
+      description:
+        'Governed runs append an event to Gnomledger when PGL is configured (see each run\'s governance block). Local records here are HMAC-signed JSON, not canonical PGL. VNP metrics and settlement are not implemented.',
+      label: 'TARGET',
+      status: 'Gnomledger append: real when configured · VNP metrics: TARGET · settlement: not implemented',
     },
     {
       num: 7,
       name: 'EXECUTION',
-      components: 'Local Container Enclave | AWS Edge | Azure Sovereign | MCP Tools | RF Sensor',
+      components: 'Node child-process sandbox',
       color: 'border-emerald-500/40 text-emerald-300 bg-emerald-950/20',
-      description: 'Physical or virtual workload runner executing stateless capability commands.',
+      description:
+        'Workload code runs in a Node child process: empty env, filesystem and child processes denied by the Node permission model, heap cap and wall-clock kill. Network is NOT restricted; no cgroups, namespaces or hardware isolation. Remote execution nodes are TARGET.',
+      label: 'VERIFIED_REPO',
+      status: 'child-process sandbox: implemented in this repo · remote nodes: TARGET',
     },
     {
       num: 6,
       name: 'ROUTING (HRMR)',
-      components: 'Hierarchical Resource & Multicast Router | 503 Fallback Handler',
+      components: 'Router simulation | 503 fallback',
       color: 'border-sky-500/40 text-sky-300 bg-sky-950/20',
-      description: 'Chooses execution path among authorized nodes with zero authority drift.',
+      description: 'Chooses among local node records; 503 reroutes, 403 stays terminal. Nodes are records, not probed hosts.',
+      label: 'DEMO',
+      status: 'simulation over local records',
     },
     {
       num: 5,
       name: 'AUTHORITY (CAPPO)',
-      components: 'Scoped Capability Grants | Cryptographic Token Signatures | 403 Terminal Check',
+      components: 'CAPPO pre-execution authorization | fail-closed 403/503',
       color: 'border-rose-500/40 text-rose-300 bg-rose-950/20',
-      description: 'Strict authority invariance. 403 is terminal, blocking permission hunting.',
+      description:
+        'In governed mode every execute request is sent to CAPPO first; only APPROVED runs. Denial, needs-approval or an unreachable CAPPO refuses the run. CAPPO decisions are unsigned and the directive is caller-declared. Local "grants" in this app are not CAPPO.',
+      label: 'CONFIGURED',
+      status: 'real when CAPPO is configured (see Veklom Fabric tab)',
     },
     {
       num: 4,
       name: 'CAPABILITY SEMANTICS',
-      components: 'Action Specifications | Required Roles | JSON Input/Output Schemas',
+      components: 'Action specifications | JSON input/output schemas',
       color: 'border-indigo-500/40 text-indigo-300 bg-indigo-950/20',
-      description: 'Defines the exact action scope requested independently of provider implementation.',
+      description: 'Defines the action scope requested, independent of where it runs.',
+      label: 'VERIFIED_REPO',
+      status: 'capability catalog defined in this repo',
     },
     {
       num: 3,
       name: 'FEDERATION',
-      components: 'Interlink Protocol | cAPI Cross-Node Discovery Mesh',
+      components: 'cAPI registration & discovery | FPI provider interface',
       color: 'border-purple-500/40 text-purple-300 bg-purple-950/20',
-      description: 'Federates multiple cloud and local sovereign nodes into a single substrate.',
+      description:
+        'This server registers with cAPI and sends heartbeats when CAPI_BACKEND_URL is configured (see Veklom Fabric tab). Federating external providers through FPI is TARGET; FPI providers shown are sample data.',
+      label: 'CONFIGURED',
+      status: 'cAPI registration: real when configured · FPI federation: TARGET',
     },
     {
       num: 2,
       name: 'NETWORK & WEB SEMANTICS',
-      components: 'IP | TLS | HTTP | DNS | REST Endpoints | MCP JSON-RPC 2.0',
+      components: 'HTTP | REST endpoints | problem+json | MCP JSON-RPC 2.0',
       color: 'border-cyan-500/40 text-cyan-300 bg-cyan-950/20',
-      description: 'Universal extensible HTTP grammar providing standardized transport.',
+      description: 'Standard HTTP transport. The MCP endpoint is a prototype.',
+      label: 'VERIFIED_REPO',
+      status: 'implemented in this repo',
     },
     {
       num: 1,
       name: 'PHYSICAL & VIRTUAL SUBSTRATE',
-      components: 'On-Prem Servers | Edge Clusters | RF-Powered Microcontrollers | Docker/K8s',
+      components: 'On-prem servers | edge clusters | RF microcontrollers | containers',
       color: 'border-slate-500/40 text-slate-300 bg-slate-900/50',
-      description: 'Foundational medium providing isolation, locality enforcement, and hardware resilience.',
+      description: 'Planned hardware medium providing isolation and locality. Today everything runs on the one host serving this page.',
+      label: 'TARGET',
+      status: 'planned',
     },
   ];
 
@@ -81,7 +102,7 @@ export const ArchitectureStackModal: React.FC<ArchitectureStackModalProps> = ({
               <Layers className="h-6 w-6 text-indigo-400" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-white">The 8-Layer Unified Substrate Stack</h2>
+              <h2 className="text-xl font-bold text-white">The 8-layer substrate stack (design vs. what exists)</h2>
               <p className="text-xs text-slate-400 font-mono">
                 "HTTP gives you a universal grammar. Computless gives you universal governance."
               </p>
@@ -107,9 +128,13 @@ export const ArchitectureStackModal: React.FC<ArchitectureStackModalProps> = ({
                 <span className="font-bold tracking-wider">
                   LAYER {layer.num}: {layer.name}
                 </span>
-                <span className="text-[10px] opacity-75">{layer.components}</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-[10px] opacity-75">{layer.components}</span>
+                  <EvidenceBadge label={layer.label} />
+                </span>
               </div>
               <p className="text-[11px] opacity-90 leading-relaxed font-sans">{layer.description}</p>
+              <p className="text-[10px] text-slate-400">{layer.status}</p>
             </div>
           ))}
         </div>
@@ -117,8 +142,8 @@ export const ArchitectureStackModal: React.FC<ArchitectureStackModalProps> = ({
         {/* Footer info */}
         <div className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400 font-mono">
           <div className="flex items-center space-x-2">
-            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-            <span>Portable Cloud: AWS, Azure &amp; Local Sovereign Compatibility</span>
+            <Info className="h-4 w-4 text-slate-400" />
+            <span>Badges say what exists today. Live fabric connection: Veklom Fabric tab.</span>
           </div>
           <button
             onClick={onClose}

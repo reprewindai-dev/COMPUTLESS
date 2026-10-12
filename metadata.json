@@ -1,6 +1,6 @@
 {
-  "name": "Computless Cloud",
-  "description": "Decentralized 8-layer substrate cloud platform with Capability, Authority (403 Fail-Closed), Federation (FPI), Routing (HRMR 503 Failover), Isolated VM Execution, PGL Evidence, Telemetry Measurement, and x402 Micropayment Settlement.",
+  "name": "COMPUTLESS",
+  "description": "COMPUTLESS — execution substrate prototype on the Veklom fabric. Runs workload code in a child-process sandbox (no filesystem, no env, network not restricted), asks CAPPO before running when governed, and records evidence to Gnomledger when configured. Sample data is labelled DEMO; no settlement is implemented.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

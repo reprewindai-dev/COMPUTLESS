@@ -10,12 +10,31 @@ import type {
 } from '../types.js';
 import { executeInIsolatedVMSandbox, verifyCanonicalAuthority, hashPayload } from './cryptoUtils.js';
 import { executeVkgAction } from './vkgEngine.js';
+import { SANDBOX_BOUNDARY } from './sandbox.js';
 
 export type { RuntimeAdapter };
 
+/** The one real execution boundary every adapter uses (see sandbox.ts). */
+export const ADAPTER_BOUNDARY: Record<string, unknown> = { ...SANDBOX_BOUNDARY };
+
 /**
- * NodeVmRuntimeAdapter: Executes user-supplied logic in an in-process V8 VM context.
- * Explicitly categorized as an in-process fault boundary (process-level isolation, not a hardware enclave).
+ * Pure routing decision shared by /api/substrate/route and the adversarial
+ * suite. Authority failure is terminal (no fallback search); infrastructure
+ * failure may move execution to a fallback without touching authority.
+ */
+export function decideRoute(input: {
+  authorityValid: boolean;
+  primaryAvailable: boolean;
+  fallbackAvailable: boolean;
+}): { outcome: 'TERMINAL_403' | 'PRIMARY' | 'FALLBACK' | 'UNAVAILABLE_503'; fallbackSearched: boolean } {
+  if (!input.authorityValid) return { outcome: 'TERMINAL_403', fallbackSearched: false };
+  if (input.primaryAvailable) return { outcome: 'PRIMARY', fallbackSearched: false };
+  return { outcome: input.fallbackAvailable ? 'FALLBACK' : 'UNAVAILABLE_503', fallbackSearched: true };
+}
+
+/**
+ * NodeVmRuntimeAdapter: runs the code in the child-process sandbox (sandbox.ts):
+ * separate process, empty env, no fs/child processes. Network NOT restricted.
  */
 export class NodeVmRuntimeAdapter implements RuntimeAdapter {
   readonly adapterType: RuntimeAdapterType = 'NodeVmRuntimeAdapter';
@@ -59,37 +78,29 @@ export class NodeVmRuntimeAdapter implements RuntimeAdapter {
       adapterType: this.adapterType,
       containmentObserved: true,
       isolationLevel: this.isolationLevel,
+      sandboxBoundary: ADAPTER_BOUNDARY,
       measuredError: vmRes.status !== 'SUCCESS' ? String(vmRes.outputData.error || 'Fault') : undefined,
     };
   }
 }
 
 export interface ContainerRuntimeOptions {
-  containerImage?: string;
-  cgroupMemoryLimitBytes?: number;
+  /** Only the timeout is honoured; there is no container runtime. */
   cpuQuotaMs?: number;
-  networkEgressDisabled?: boolean;
-  externalEvidenceSource?: string;
 }
 
 /**
- * ContainerRuntimeAdapter: Executes workloads inside isolated container / containment sandbox boundaries.
- * Enforces cgroup resource containment, network namespace isolation, and returns verified evidence sources.
+ * ContainerRuntimeAdapter: there is NO container runtime. This adapter runs the
+ * code in the same child-process sandbox as NodeVmRuntimeAdapter (no image, no
+ * cgroups, no network namespace). Real container isolation is a TARGET.
  */
 export class ContainerRuntimeAdapter implements RuntimeAdapter {
   readonly adapterType: RuntimeAdapterType = 'ContainerRuntimeAdapter';
-  readonly isolationLevel = 'CONTAINMENT_SANDBOX' as const;
+  readonly isolationLevel = 'PROCESS_ISOLATION' as const;
   private options: ContainerRuntimeOptions;
 
   constructor(options: ContainerRuntimeOptions = {}) {
-    this.options = {
-      containerImage: options.containerImage || 'ghcr.io/computless/substrate-worker:v2.4',
-      cgroupMemoryLimitBytes: options.cgroupMemoryLimitBytes || 268435456, // 256MB
-      cpuQuotaMs: options.cpuQuotaMs || 5000,
-      networkEgressDisabled: options.networkEgressDisabled !== false,
-      externalEvidenceSource: options.externalEvidenceSource || 'CONTAINER_CGROUP_V2_ISOLATION_PROV',
-      ...options,
-    };
+    this.options = { cpuQuotaMs: options.cpuQuotaMs || 5000 };
   }
 
   async execute(request: GovernedRuntimeRequest): Promise<RuntimeExecutionResult> {
@@ -110,16 +121,9 @@ export class ContainerRuntimeAdapter implements RuntimeAdapter {
       };
     }
 
-    const startTime = Date.now();
-    const stdout: string[] = [
-      `[CONTAINER_INIT] Spawning worker from image ${this.options.containerImage}`,
-      `[CGROUP_ISOLATION] Memory limit bounded at ${(this.options.cgroupMemoryLimitBytes! / (1024 * 1024)).toFixed(0)}MB, Network egress: ${this.options.networkEgressDisabled ? 'BLOCKED' : 'ALLOW'}`,
-    ];
-
     const code = request.code || `
       const input = context.inputPayload || {};
-      output.result = 'CONTAINER_EXECUTED';
-      output.containerImage = "${this.options.containerImage}";
+      output.result = 'EXECUTED';
       output.processedInput = input;
       output.timestamp = new Date().toISOString();
     `;
@@ -127,42 +131,31 @@ export class ContainerRuntimeAdapter implements RuntimeAdapter {
     const timeout = Math.min(request.timeoutMs || 5000, this.options.cpuQuotaMs || 5000);
     const vmRes = await executeInIsolatedVMSandbox(code, request.inputPayload, timeout);
 
-    const duration = Math.max(1, Date.now() - startTime);
-    stdout.push(...vmRes.stdout);
-    stdout.push(`[CONTAINER_EXIT] Container execution terminated with exit status: ${vmRes.status}`);
-
-    const memoryUsage = Math.min(vmRes.memoryUsageBytes + 65536, this.options.cgroupMemoryLimitBytes!);
-
     return {
       status: vmRes.status,
-      stdout,
-      stderr: vmRes.status === 'RUNTIME_ERROR' ? ['Container process execution fault'] : [],
-      outputData: {
-        ...vmRes.outputData,
-        _containerRuntime: {
-          image: this.options.containerImage,
-          cgroupMemoryLimitBytes: this.options.cgroupMemoryLimitBytes,
-          networkEgress: this.options.networkEgressDisabled ? 'DENIED' : 'ALLOWED',
-        },
-      },
-      memoryUsageBytes: memoryUsage,
-      durationMs: duration,
+      stdout: vmRes.stdout,
+      stderr: vmRes.status === 'RUNTIME_ERROR' ? ['Execution fault in child-process sandbox'] : [],
+      outputData: vmRes.outputData,
+      memoryUsageBytes: vmRes.memoryUsageBytes,
+      durationMs: vmRes.durationMs,
       exitCode: vmRes.status === 'SUCCESS' ? 0 : vmRes.status === 'TERMINATED_TIMEOUT' ? 124 : 1,
       adapterType: this.adapterType,
       containmentObserved: true,
       isolationLevel: this.isolationLevel,
-      externalEvidenceSource: this.options.externalEvidenceSource,
+      sandboxBoundary: ADAPTER_BOUNDARY,
+      notes: ['No container was started: ContainerRuntimeAdapter runs in the same child-process sandbox (container isolation is a TARGET).'],
       measuredError: vmRes.status !== 'SUCCESS' ? String(vmRes.outputData.error || 'Fault') : undefined,
     };
   }
 }
 
 /**
- * VkgRuntimeAdapter: Executes immutable .vkg packages deterministically.
+ * VkgRuntimeAdapter: verifies a .vkg package digest, then runs the handler in
+ * the child-process sandbox.
  */
 export class VkgRuntimeAdapter implements RuntimeAdapter {
   readonly adapterType: RuntimeAdapterType = 'VkgRuntimeAdapter';
-  readonly isolationLevel = 'CONTAINMENT_SANDBOX' as const;
+  readonly isolationLevel = 'PROCESS_ISOLATION' as const;
   private packages: Map<string, VkgPackage>;
 
   constructor(packages: VkgPackage[] = []) {
@@ -204,18 +197,20 @@ export class VkgRuntimeAdapter implements RuntimeAdapter {
         durationMs: 0,
         exitCode: 1,
         adapterType: this.adapterType,
-        containmentObserved: true,
+        containmentObserved: false,
         measuredError: `Package '${packageId}' not found`,
       };
     }
 
-    return executeVkgAction(pkg, action, request.inputPayload, request.authority);
+    const r = await executeVkgAction(pkg, action, request.inputPayload, request.authority);
+    return { ...r, isolationLevel: this.isolationLevel, ...(r.containmentObserved ? { sandboxBoundary: ADAPTER_BOUNDARY } : {}) };
   }
 }
 
 /**
- * OfflineRuntimeAdapter: Executes within pre-issued bounded offline leases.
- * Validates lease limits, nonces, and records local observations for reconciliation.
+ * OfflineRuntimeAdapter: enforces a local lease's quota/action bounds and
+ * advances its nonce, then runs the code in the child-process sandbox. A lease
+ * is a local bound, not authority.
  */
 export class OfflineRuntimeAdapter implements RuntimeAdapter {
   readonly adapterType = 'OfflineRuntimeAdapter' as const;
@@ -304,7 +299,7 @@ export class OfflineRuntimeAdapter implements RuntimeAdapter {
         durationMs: 0,
         exitCode: 1,
         adapterType: this.adapterType,
-        containmentObserved: true,
+        containmentObserved: false,
         measuredError: 'Execution quota exhausted',
       };
     }
@@ -321,7 +316,7 @@ export class OfflineRuntimeAdapter implements RuntimeAdapter {
         durationMs: 0,
         exitCode: 1,
         adapterType: this.adapterType,
-        containmentObserved: true,
+        containmentObserved: false,
         measuredError: 'Action not permitted by offline lease',
       };
     }
@@ -329,7 +324,8 @@ export class OfflineRuntimeAdapter implements RuntimeAdapter {
     // 3. Decrement quota and advance nonce
     lease.executionsRemaining -= 1;
     const oldNonce = lease.currentNonce;
-    const nextNonce = '0x_off_nonce_' + (parseInt(oldNonce.replace('0x_off_nonce_', ''), 16) + 1).toString(16);
+    const parsed = parseInt(oldNonce.replace('0x_off_nonce_', ''), 16);
+    const nextNonce = '0x_off_nonce_' + ((Number.isFinite(parsed) ? parsed : 0) + 1).toString(16);
     lease.currentNonce = nextNonce;
 
     // 4. Dispatch execution (via VKG or VM)
@@ -353,6 +349,8 @@ export class OfflineRuntimeAdapter implements RuntimeAdapter {
         exitCode: vmRes.status === 'SUCCESS' ? 0 : 1,
         adapterType: this.adapterType,
         containmentObserved: true,
+        isolationLevel: this.isolationLevel,
+        sandboxBoundary: ADAPTER_BOUNDARY,
       };
     }
 

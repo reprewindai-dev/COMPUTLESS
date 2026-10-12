@@ -1,3 +1,19 @@
+/**
+ * Veklom evidence labels. Seed data is DEMO; records created by COMPUTLESS's own
+ * local logic are UNVERIFIED; checks recomputed now from repo-held content are
+ * VERIFIED_REPO; only results observed live from the Veklom fabric (fabric.ts)
+ * are VERIFIED_LIVE. Demo/seeded/synthetic output is never production proof.
+ */
+export type EvidenceLabel =
+  | 'VERIFIED_LIVE'
+  | 'VERIFIED_REPO'
+  | 'CONFIGURED'
+  | 'LAST_KNOWN'
+  | 'TARGET'
+  | 'UNVERIFIED'
+  | 'DEMO'
+  | 'ARCHIVED';
+
 export type SubstrateNodeType = 'local_k8s' | 'aws_edge' | 'azure_sovereign' | 'rf_microcontroller';
 
 export interface SubstrateNode {
@@ -5,15 +21,25 @@ export interface SubstrateNode {
   name: string;
   type: SubstrateNodeType;
   region: string;
-  localityBoundary: string; // e.g. 'Enclave Alpha (US-East)', 'National Data Center', 'Factory Edge RF'
-  status: 'online' | 'degraded' | 'offline';
-  latencyMs: number;
-  cpuUsagePct: number;
-  memoryUsagePct: number;
-  activeWorkloads: number;
+  /** Declared boundary label; never verified. */
+  localityBoundary: string;
+  /**
+   * COMPUTLESS has no node probe, so a node is never 'online' merely by being
+   * registered: registered/seeded nodes are 'unverified'. 'offline'/'degraded'
+   * are operator toggles.
+   */
+  status: 'online' | 'degraded' | 'offline' | 'unverified';
+  /** Operator-declared latency (null = not measured / not declared). */
+  latencyMs: number | null;
+  /** null = not measured (no node telemetry exists). */
+  cpuUsagePct: number | null;
+  memoryUsagePct: number | null;
+  activeWorkloads: number | null;
+  /** Declared flag only; nothing verifies sovereignty. */
   isSovereign: boolean;
   mcpEnabled: boolean;
   supportedCapabilities: string[];
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface CAPPOGrant {
@@ -25,7 +51,13 @@ export interface CAPPOGrant {
   isRevoked: boolean;
   issuer?: string;
   issueDate?: string;
+  /** Unsigned local digest. Local grants are not CAPPO authority. */
   cappoSignature?: string;
+  /** Derived from time on every read. */
+  status?: 'active' | 'expired' | 'revoked';
+  evidenceLabel?: EvidenceLabel;
+  canonical?: false;
+  authoritySource?: 'local-grant (not CAPPO)';
 }
 
 export interface CapabilityDefinition {
@@ -37,6 +69,7 @@ export interface CapabilityDefinition {
   schemaJson: string;
   outputSchema?: Record<string, string>;
   maxPricePerCall?: number;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface HRMRRouteRequest {
@@ -66,11 +99,15 @@ export interface HRMRRouteResult {
   finalHttpStatus: 200 | 403 | 503 | 500;
   authorityDecision: 'GRANTED' | 'DENIED_TERMINAL';
   executionStatus: 'SUCCESS' | 'REROUTED_FALLBACK' | 'FAILED';
+  /** Measured handler time (process.hrtime). No workload runs on this route. */
   executionTimeMs: number;
   pglProofHash?: string;
-  x402SettlementGas?: number;
+  /** No settlement exists. */
+  x402SettlementGas?: number | null;
   trace: RouteTraceStep[];
   outputData?: Record<string, unknown>;
+  evidenceLabel?: EvidenceLabel;
+  authoritySource?: 'local-grant (not CAPPO)';
 }
 
 export interface PGLRecord {
@@ -82,9 +119,15 @@ export interface PGLRecord {
   executedNodeId: string;
   requestPayloadHash: string;
   responseHash: string;
+  /** Local HMAC-SHA256 signature with this process's secret. Not canonical PGL. */
   pglSignature: string;
-  x402GasSettled: number;
+  /** No settlement exists: always null. */
+  x402GasSettled: number | null;
+  /** Recomputed on read: does the signature verify with the current secret? */
   verifiable: boolean;
+  evidenceLabel?: EvidenceLabel;
+  canonical?: false;
+  signatureScheme?: 'local-hmac-pgl-proof-v1' | 'local-hmac-action-evidence-v1' | 'none';
 }
 
 export interface AgentTask {
@@ -96,11 +139,13 @@ export interface AgentTask {
   maxRecursionDepth: number;
   lastOptimizedAt?: string;
   logs: string[];
+  /** Not measured: null. */
   metrics: {
-    opsPerSec: number;
-    tasksDriven: number;
-    successRatePct: number;
+    opsPerSec: number | null;
+    tasksDriven: number | null;
+    successRatePct: number | null;
   };
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface PluginModule {
@@ -111,8 +156,12 @@ export interface PluginModule {
   enabled: boolean;
   description: string;
   author: string;
-  downloads: number;
+  /** Not measured: null. */
+  downloads: number | null;
   activeCapabilityId: string;
+  /** false = catalog entry only, no adapter code exists. */
+  implemented?: boolean;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface MCPTool {
@@ -123,7 +172,8 @@ export interface MCPTool {
 }
 
 // Federation Provider Interface (FPI) Types
-export type FPIProviderStatus = 'active' | 'degraded' | 'suspended' | 'registering' | 'offline' | 'maintenance';
+/** 'active' is only valid after an observed heartbeat; COMPUTLESS has none, so providers are 'unverified'. */
+export type FPIProviderStatus = 'active' | 'degraded' | 'suspended' | 'registering' | 'offline' | 'maintenance' | 'unverified';
 
 export interface FPIProviderPricing {
   pricePerComputeUnitVEK: number;
@@ -142,17 +192,23 @@ export interface FPIProvider {
   providerName: string;
   providerType: 'hyperscaler' | 'sovereign_enclave' | 'decentralized_mesh' | 'edge_telecom';
   endpointUrl: string;
-  authKeyHash: string;
+  /** SHA-256 of a supplied key, or null when none was supplied. */
+  authKeyHash: string | null;
   regions: string[];
   status: FPIProviderStatus;
-  slaUptimePct: number;
-  maxLatencyMs: number;
+  /** Declared by the registrant (never measured); null when not declared. */
+  slaUptimePct: number | null;
+  /** Declared by the registrant (never measured); null when not declared. */
+  maxLatencyMs: number | null;
+  /** Declared flag only. */
   isSovereignEnclave: boolean;
   supportedCapabilities: string[];
   pricing: FPIProviderPricing;
   quota: FPIProviderQuota;
   registeredAt: string;
-  lastHeartbeatAt: string;
+  /** null = no heartbeat has ever been received (COMPUTLESS has no heartbeat endpoint). */
+  lastHeartbeatAt: string | null;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface FPIResourceAllocation {
@@ -168,7 +224,9 @@ export interface FPIResourceAllocation {
   leaseDurationMinutes: number;
   createdAt: string;
   expiresAt: string;
+  /** Quote from declared pricing; nothing is charged or settled. */
   x402TotalLeaseCostVEK: number;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface FPIExecutionJob {
@@ -177,14 +235,18 @@ export interface FPIExecutionJob {
   providerName: string;
   capabilityId: string;
   cappoGrantId: string;
-  status: 'queued' | 'executing' | 'completed' | 'failed' | 'fallback_rerouted';
-  executionTimeMs: number;
-  x402GasSettled: number;
-  pglProofSignature: string;
+  status: 'queued' | 'executing' | 'completed' | 'failed' | 'fallback_rerouted' | 'not_dispatched';
+  /** null = nothing executed. */
+  executionTimeMs: number | null;
+  /** No settlement exists: null. */
+  x402GasSettled: number | null;
+  pglProofSignature: string | null;
   submittedAt: string;
-  completedAt?: string;
+  completedAt?: string | null;
   outputSummary: string;
   logs: string[];
+  dispatched?: boolean;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface FPIBillingSettlement {
@@ -192,12 +254,14 @@ export interface FPIBillingSettlement {
   providerId: string;
   providerName: string;
   period: string;
-  jobsExecuted: number;
-  totalComputeUnitsUsed: number;
-  totalx402EarnedVEK: number;
-  payoutStatus: 'settled' | 'pending' | 'processing';
-  payoutTxHash: string;
+  jobsExecuted: number | null;
+  totalComputeUnitsUsed: number | null;
+  totalx402EarnedVEK: number | null;
+  /** No settlement exists. */
+  payoutStatus: 'unsettled' | 'not_implemented';
+  payoutTxHash: null;
   timestamp: string;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface FPIDiscoveryQuery {
@@ -224,8 +288,12 @@ export interface AuthorizationReceipt {
   issuedAt: string;
   expiresAt: number;
   signature: string;
+  /** Derived from time on read. */
   status: 'active' | 'consumed' | 'expired';
   consumedAt?: string;
+  evidenceLabel?: EvidenceLabel;
+  /** Local HMAC receipt; not CAPPO authority. */
+  canonical?: false;
 }
 
 export interface BlockedIntentRecord {
@@ -243,13 +311,17 @@ export interface BlockedIntentRecord {
     instance: string;
   };
   threatLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  /** No quarantine mechanism exists: always false. */
   quarantineApplied: boolean;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface AgentIdentity {
   id: string;
   name: string;
+  /** NOT a cryptographic public key: an identifier digest (see keyType). */
   publicKey: string;
+  keyType?: 'id-digest (not a key)';
   trustTier: 'T0_EPHEMERAL' | 'T1_SCOPED' | 'T2_AUTONOMOUS' | 'T3_SUBSTRATE_CORE' | 'T4_SOVEREIGN_ROOT';
   allowedCapabilities: string[];
   totalActionsGoverned: number;
@@ -259,6 +331,7 @@ export interface AgentIdentity {
   lastActiveAt: string;
   registeredAt: string;
   sandboxRuntimePreference: 'node_vm' | 'docker_isolated' | 'e2b_cloud_cell';
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface SandboxExecutionRequest {
@@ -278,16 +351,26 @@ export interface SandboxExecutionResult {
   capabilityId: string;
   sandboxType: 'node_vm' | 'docker_isolated' | 'e2b_cloud_cell';
   status: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'POLICY_VIOLATION' | 'RUNTIME_ERROR';
+  success?: boolean;
   stdout: string[];
   outputData: Record<string, unknown>;
+  /** Child-process RSS when the workload finished (0 = unknown). Not a per-workload quota. */
   memoryUsageBytes: number;
+  /** Wall-clock time measured inside the child around the workload. */
   executionDurationMs: number;
-  receipt: AuthorizationReceipt;
+  /** Local receipts are no longer issued for execution; authority is governance.authorization. */
+  receipt: AuthorizationReceipt | null;
+  /** Local HMAC (not canonical PGL). */
   pglProofSignature: string;
   requestPayloadHash: string;
   responseHash: string;
-  x402GasSettled: number;
+  /** No settlement exists: null. */
+  x402GasSettled: number | null;
   timestamp: string;
+  evidenceLabel?: EvidenceLabel;
+  canonical?: false;
+  /** Where the code actually ran (all sandboxType values use this). */
+  actualSandbox?: string;
 }
 
 export interface VeklomAmplificationMetrics {
@@ -295,19 +378,22 @@ export interface VeklomAmplificationMetrics {
   amplificationScore: number;
   recursionFormula: 'R = f(I, P, A, E)';
   rungs: {
-    rung1_governedActions: { count: number; label: 'Governed Actions (G)'; status: 'healthy' };
-    rung2_authorizationReceipts: { count: number; label: 'Authorization Receipts (R)'; status: 'healthy' };
-    rung3_blockedIntents: { count: number; label: 'Blocked Intents (B)'; status: 'healthy' };
-    rung4_safeRoutes: { count: number; label: 'Safe Routes (S)'; status: 'healthy' };
-    rung5_evidenceChainEntries: { count: number; label: 'Evidence Chain Entries (E)'; status: 'healthy' };
-    rung6_agentIdentities: { count: number; label: 'Agent Identities (I)'; status: 'healthy' };
-    rung7_integrations: { count: number; label: 'Integrations (N)'; status: 'healthy' };
+    rung1_governedActions: { count: number; label: 'Governed Actions (G)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung2_authorizationReceipts: { count: number; label: 'Authorization Receipts (R)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung3_blockedIntents: { count: number; label: 'Blocked Intents (B)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung4_safeRoutes: { count: number; label: 'Safe Routes (S)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung5_evidenceChainEntries: { count: number; label: 'Evidence Chain Entries (E)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung6_agentIdentities: { count: number; label: 'Agent Identities (I)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
+    rung7_integrations: { count: number; label: 'Integrations (N)'; status: 'local_count'; evidenceLabel?: EvidenceLabel };
   };
   latestReceipts: AuthorizationReceipt[];
   latestBlocked: BlockedIntentRecord[];
   activeIdentities: AgentIdentity[];
-  systemEntropyPct: number;
+  /** Not measured: null. */
+  systemEntropyPct: number | null;
   lastEvaluatedAt: string;
+  evidenceLabel?: EvidenceLabel;
+  note?: string;
 }
 
 // =========================================================================
@@ -324,6 +410,9 @@ export interface SubstrateLayerSpec {
   invariants: string[];
   protocolStandard: string;
   dataStructures: string[];
+  /** The spec text above is a TARGET; currentImplementation says what the code does today. */
+  evidenceLabel?: EvidenceLabel;
+  currentImplementation?: string;
 }
 
 export interface Substrate8LayerArchitectureSpec {
@@ -331,6 +420,7 @@ export interface Substrate8LayerArchitectureSpec {
   version: string;
   network: string;
   layers: SubstrateLayerSpec[];
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface Substrate8LayerPipelineRequest {
@@ -353,7 +443,7 @@ export interface Substrate8LayerStepResult<T = any> {
   layerNumber: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   layerName: string;
   question: string;
-  status: 'SUCCESS' | 'BLOCKED_403' | 'FALLBACK_503' | 'ERROR' | 'SKIPPED';
+  status: 'SUCCESS' | 'BLOCKED_403' | 'FALLBACK_503' | 'ERROR' | 'SKIPPED' | 'NOT_IMPLEMENTED';
   durationMs: number;
   data: T;
   summary: string;
@@ -363,69 +453,86 @@ export interface Substrate8LayerPipelineResult {
   pipelineId: string;
   timestamp: string;
   overallStatus: 'SUCCESS' | 'BLOCKED_403' | 'FALLBACK_503' | 'EXECUTION_FAILED';
-  httpStatus: 200 | 403 | 503 | 500;
+  httpStatus: 200 | 403 | 422 | 503 | 504 | 500;
   totalDurationMs: number;
   requestedCapabilityId: string;
   executingSubject: string;
-  receiptId?: string;
+  receiptId?: string | null;
   pglProofSignature?: string;
-  settlementTxHash?: string;
-  x402GasSettled?: number;
+  /** No settlement exists: null. */
+  settlementTxHash?: null;
+  x402GasSettled?: null;
+  evidenceLabel?: EvidenceLabel;
   layers: {
     layer1_capability: Substrate8LayerStepResult<{
       capability: CapabilityDefinition;
+      /** No JSON-schema validation is performed: always false. */
       schemaValidated: boolean;
+      payloadIsObject: boolean;
       inputParams: Record<string, unknown>;
     }>;
     layer2_authority: Substrate8LayerStepResult<{
-      cappoGrantId: string;
+      mode: 'local-demo' | 'governed' | 'disabled';
+      /** CAPPO decision from res.locals.governance (null in local-demo). */
+      authorization: Record<string, unknown> | null;
+      authorized: boolean;
+      cappoGrantId?: string | null;
       cappoValid: boolean;
-      receipt?: AuthorizationReceipt;
+      receipt?: AuthorizationReceipt | null;
       rolePermitted: boolean;
       blockedReason?: string;
-    }>;
+      simulated?: boolean;
+    } | null>;
     layer3_federation: Substrate8LayerStepResult<{
       totalEligibleProviders: number;
-      eligibleProviders: { id: string; name: string; type: string; isSovereign: boolean; price: number; sla: number }[];
+      eligibleProviders: { id: string; name: string; type: string; status: string; isSovereign: boolean; price: number; sla: number | null }[];
       selectedFederationCluster: string;
-    }>;
+    } | null>;
     layer4_routing: Substrate8LayerStepResult<{
-      primaryCandidate: { id: string; name: string; latencyMs: number; score: number };
+      primaryCandidate: { id: string; name: string; latencyMs: number | null; score: number | null } | null;
       executedNode: { id: string; name: string; region: string };
       reroutedFallback: boolean;
       fallbackReason?: string;
-      hrmrScore: number;
-    }>;
+      hrmrScore: number | null;
+      note: string;
+    } | null>;
     layer5_execution: Substrate8LayerStepResult<{
       sandboxType: 'node_vm' | 'docker_isolated' | 'e2b_cloud_cell' | 'rf_edge';
+      actualSandbox: string;
       executionStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR';
       stdout: string[];
       outputData: Record<string, unknown>;
+      /** Child-process RSS at workload end. */
       memoryUsedBytes: number;
-      cpuExecutionMs: number;
-    }>;
+      /** Not measured (wall-clock is reported instead): null. */
+      cpuExecutionMs: number | null;
+      workloadWallClockMs: number;
+    } | null>;
     layer6_evidence: Substrate8LayerStepResult<{
+      ledger: 'gnomledger' | 'local-only';
       pglRecord: PGLRecord;
       requestPayloadHash: string;
       responseHash: string;
       pglSignature: string;
-      immutableLedgerIndex: number;
-    }>;
+      localLedgerIndex: number;
+    } | null>;
     layer7_measurement: Substrate8LayerStepResult<{
-      verifiedUptimePct: number;
+      uptimePct: null;
       actualWallClockLatencyMs: number;
       memoryDeltaBytes: number;
-      throughputOps: number;
-      slaCompliant: boolean;
-    }>;
+      throughputOps: null;
+      slaCompliant: boolean | null;
+    } | null>;
     layer8_settlement: Substrate8LayerStepResult<{
+      implemented: false;
       currency: 'VEK';
-      x402GasSettled: number;
-      providerPayoutEarned: number;
-      protocolFee: number;
-      payoutTxHash: string;
-      settlementFinality: 'IMMEDIATE_FINALITY';
-    }>;
+      x402GasSettled: null;
+      providerPayoutEarned: null;
+      protocolFee: null;
+      payoutTxHash: null;
+      payoutStatus: 'not_implemented';
+      settlementFinality: 'NONE';
+    } | null>;
   };
 }
 
@@ -450,12 +557,15 @@ export interface ActionEvidenceRecord {
   pglSignature: string;
   merkleLeafHash: string;
   nonce: string;
-  enclaveHardwareProof?: string;
+  /** Recomputed on read: signature/leaf/block hash verify with the current secret. */
   verifiable: boolean;
   tamperFlags?: {
     isTampered: boolean;
     reason?: string;
   };
+  evidenceLabel?: EvidenceLabel;
+  /** Local HMAC record in a mutable JSON file; not canonical PGL. */
+  canonical?: false;
 }
 
 export interface ActionSignatureRequest {
@@ -482,11 +592,18 @@ export interface ActionSignatureVerificationReport {
   expectedSignature: string;
   providedSignature: string;
   signatureMatch: boolean;
-  chainIntegrityValid: boolean;
-  merkleProofValid: boolean;
+  /** null = no expected parent hash supplied, so not checked. */
+  chainIntegrityValid: boolean | null;
+  /** Merkle inclusion is not checked by this verifier: null. */
+  merkleProofValid: boolean | null;
+  /** Recomputed leaf hash matches the stored one (null = no leaf stored). */
+  merkleLeafValid?: boolean | null;
+  /** Recomputed block hash matches the stored one (null = not checkable). */
+  blockHashValid?: boolean | null;
+  scope?: string;
   attestationCheckpoints: {
     checkpoint: string;
-    status: 'PASSED' | 'FAILED' | 'WARNING';
+    status: 'PASSED' | 'FAILED' | 'WARNING' | 'SKIPPED' | 'UNAVAILABLE';
     description: string;
     computedValue?: string;
     expectedValue?: string;
@@ -502,6 +619,7 @@ export interface EvidenceMerkleProof {
     position: 'left' | 'right';
     hash: string;
   }[];
+  /** Computed by replaying the audit path to the root. */
   isValid: boolean;
 }
 
@@ -519,8 +637,8 @@ export interface EvidenceMerkleTreeData {
 // =========================================================================
 
 export interface SchemaValidationEvaluation {
-  status: 'PASSED' | 'FAILED' | 'PARTIAL';
-  scorePct: number;
+  status: 'PASSED' | 'FAILED' | 'PARTIAL' | 'NOT_EVALUATED';
+  scorePct: number | null;
   matchedFields: string[];
   missingRequiredFields: string[];
   typeMismatchFields: { field: string; expectedType: string; actualType: string }[];
@@ -528,12 +646,13 @@ export interface SchemaValidationEvaluation {
 }
 
 export interface SLAEvaluation {
-  status: 'PASSED' | 'DEGRADED' | 'FAILED';
-  scorePct: number;
+  status: 'PASSED' | 'DEGRADED' | 'FAILED' | 'NOT_EVALUATED';
+  scorePct: number | null;
   actualWallClockLatencyMs: number;
-  budgetedMaxLatencyMs: number;
-  varianceMs: number;
-  slaCompliant: boolean;
+  /** Caller-supplied latency budget; null = none supplied, not evaluated. */
+  budgetedMaxLatencyMs: number | null;
+  varianceMs: number | null;
+  slaCompliant: boolean | null;
   details: string;
 }
 
@@ -549,19 +668,21 @@ export interface RuntimeObservation {
 }
 
 export interface ResourceContainmentEvaluation {
-  status: 'PASSED' | 'WARNING' | 'EXCEEDED';
-  scorePct: number;
+  status: 'PASSED' | 'WARNING' | 'EXCEEDED' | 'NOT_EVALUATED';
+  scorePct: number | null;
+  /** Child-process RSS at workload end (as reported by the caller or sandbox). */
   memoryUsedBytes: number;
-  memoryQuotaBytes: number;
-  memoryUsagePct: number;
-  cpuExecutionMs: number;
+  /** No per-workload memory quota exists: null. (V8 heap is capped separately.) */
+  memoryQuotaBytes: number | null;
+  memoryUsagePct: number | null;
+  cpuExecutionMs: number | null;
   runtimeObservation: RuntimeObservation;
   details: string;
 }
 
 export interface RuntimeExitEvaluation {
   status: 'PASSED' | 'FAILED';
-  scorePct: number;
+  scorePct: number | null;
   exitCode: number;
   errorCount: number;
   runtimeStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION';
@@ -569,13 +690,14 @@ export interface RuntimeExitEvaluation {
   details: string;
 }
 
+/** No hardware/TPM verifier exists in COMPUTLESS: always UNAVAILABLE with null metrics. */
 export interface HardwareTelemetryEvaluation {
   status: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED';
-  scorePct: number;
-  monotonicCounterDelta: number;
-  uptimeAttestationPct: number;
+  scorePct: number | null;
+  monotonicCounterDelta: number | null;
+  uptimeAttestationPct: number | null;
   enclaveAttestationValid: boolean;
-  nonceFreshness: 'FRESH' | 'EXPIRED' | 'REPLAY_DETECTED';
+  nonceFreshness: 'FRESH' | 'EXPIRED' | 'REPLAY_DETECTED' | null;
   hardwareProofState: 'VERIFIED' | 'OBSERVED' | 'UNAVAILABLE' | 'NOT_SUPPORTED';
   details: string;
 }
@@ -588,8 +710,9 @@ export interface ActionExecutionConfirmationCertificate {
   capabilityId: string;
   subject: string;
   executingNodeId: string;
-  overallConfirmationStatus: 'FULLY_CONFIRMED' | 'DEGRADED_SLA' | 'SCHEMA_MISMATCH' | 'EXECUTION_FAILED';
-  confirmationScorePct: number;
+  overallConfirmationStatus: 'LOCALLY_OBSERVED' | 'DEGRADED_SLA' | 'SCHEMA_MISMATCH' | 'EXECUTION_FAILED';
+  /** Mean of the dimensions that were actually evaluated; null if none were. */
+  confirmationScorePct: number | null;
   dimensions: {
     schemaConformance: SchemaValidationEvaluation;
     slaLatency: SLAEvaluation;
@@ -597,9 +720,12 @@ export interface ActionExecutionConfirmationCertificate {
     runtimeExit: RuntimeExitEvaluation;
     hardwareTelemetry: HardwareTelemetryEvaluation;
   };
+  /** Local HMAC-SHA256 over the certificate fields (this process's secret). Not an attestation. */
   cryptographicAttestationSignature: string;
   issuer: string;
   summaryVerdict: string;
+  evidenceLabel?: EvidenceLabel;
+  canonical?: false;
 }
 
 // Canonical Execution Observation / Runtime Measurement (Declassified from false hardware proofs)
@@ -618,16 +744,25 @@ export interface ActionConfirmationRequest {
   memoryUsedBytes: number;
   executionStatus: 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'POLICY_VIOLATION' | 'BOUND_VIOLATION' | 'UNAUTHORIZED';
   stdout?: string[];
+  /** Caller-asserted flags. COMPUTLESS has no verifier for them; they never promote a state to VERIFIED. */
   enclaveAttested?: boolean;
   hardwareProofProvided?: boolean;
   isolationVerifiedByEvidence?: boolean;
   externalEvidenceSource?: string;
+  /** Optional caller latency budget for the SLA dimension. */
+  latencyBudgetMs?: number;
 }
 
 // =========================================================================
 // COMPUTLESS Canonical Runtime Interfaces & Authority Consumer Contracts
 // =========================================================================
 
+/**
+ * A self-asserted execution scope token (capability/action/expiry bounds).
+ * Despite the historical name it is NOT authority: its digest is an unkeyed
+ * SHA-256 anyone can compute. Real authority is the CAPPO decision attached to
+ * responses as governance.authorization.
+ */
 export interface CanonicalExecutionAuthority {
   executionId: string;
   workspaceId: string;
@@ -639,6 +774,8 @@ export interface CanonicalExecutionAuthority {
   runtimeProfile: 'CONNECTED' | 'COMPUTELESS' | 'OFFLINE';
   nonce?: string;
   signature?: string;
+  canonical?: false;
+  source?: string;
 }
 
 export interface BoundedOfflineLease {
@@ -655,6 +792,10 @@ export interface BoundedOfflineLease {
   startNonce: string;
   currentNonce: string;
   isRevoked: boolean;
+  /** Derived on read from expiry/revocation/quota. A lease is a local quota bound, not authority. */
+  status?: 'active' | 'expired' | 'revoked' | 'exhausted';
+  evidenceLabel?: EvidenceLabel;
+  canonical?: false;
 }
 
 export interface VkgManifest {
@@ -673,9 +814,13 @@ export interface VkgManifest {
 export interface VkgPackage {
   manifest: VkgManifest;
   dataTables: Record<string, unknown>;
-  actionHandlers: Record<string, string>; // Deterministic JavaScript bytecode/code handlers
+  actionHandlers: Record<string, string>; // JavaScript source handlers
+  /** Stored in a mutable local file; content changes are detected by the digest, not prevented. */
   isImmutable: boolean;
   installedAt: string;
+  /** VERIFIED_REPO when the digest was recomputed now and matches the repo's built-in package. */
+  evidenceLabel?: EvidenceLabel;
+  digestValid?: boolean;
 }
 
 export interface VkgValidationResult {
@@ -727,6 +872,9 @@ export interface RuntimeExecutionResult {
   isolationLevel?: 'HARDWARE_ENCLAVE' | 'CONTAINMENT_SANDBOX' | 'PROCESS_ISOLATION' | 'UNVERIFIED';
   measuredError?: string;
   externalEvidenceSource?: string;
+  /** The real boundary the code ran in (SANDBOX_BOUNDARY), when it ran. */
+  sandboxBoundary?: Record<string, unknown>;
+  notes?: string[];
 }
 
 export interface RuntimeAdapter {
@@ -749,8 +897,12 @@ export interface LocalSubstrateObservation {
   memoryBytes: number;
   exitCode: number;
   nonce: string;
+  /** No reconciliation backend exists: stays false. */
   reconciled: boolean;
   reconciliationBatchId?: string;
+  /** Set when the observation was included in a LOCAL batch (not submitted anywhere). */
+  localBatchId?: string;
+  evidenceLabel?: EvidenceLabel;
 }
 
 export interface ReconciliationPayload {
@@ -761,6 +913,7 @@ export interface ReconciliationPayload {
   localObservations: LocalSubstrateObservation[];
   localMerkleRoot: string;
   authorityDigest: string;
-  status: 'PENDING' | 'RECONCILED' | 'REJECTED';
+  status: 'PENDING' | 'RECONCILED' | 'REJECTED' | 'LOCAL_BATCH_NOT_SUBMITTED';
+  evidenceLabel?: EvidenceLabel;
 }
 
