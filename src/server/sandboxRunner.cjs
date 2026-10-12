@@ -1,10 +1,11 @@
 'use strict';
 // Child-process workload runner. Started by src/server/sandbox.ts as:
 //   node --permission --allow-fs-read=<this file> --max-old-space-size=<n> sandboxRunner.cjs
-// with an empty environment. The Node permission model denies filesystem
-// access (other than reading this file), child processes, workers and native
-// addons. It does NOT restrict network access. node:vm is used only to give
-// the workload a clean global scope; it is not the isolation boundary.
+// with an empty environment and --disallow-code-generation-from-strings, so a
+// workload cannot turn an outer-realm Function constructor into a handle on
+// `process`. The Node permission model additionally denies filesystem access
+// (other than reading this file), child processes, workers and native addons.
+// Nothing restricts network access at the OS level.
 const vm = require('vm');
 
 function readStdin() {

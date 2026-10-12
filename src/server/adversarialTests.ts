@@ -698,7 +698,7 @@ export async function runAdversarialTestSuite(): Promise<AdversarialTestSuiteRep
       containerRes.isolationLevel === 'PROCESS_ISOLATION' &&
       boundary.kind === 'node-child-process' &&
       boundary.cgroups === false &&
-      boundary.network === 'NOT restricted' &&
+      String(boundary.network).startsWith('NOT restricted') &&
       containerRes.externalEvidenceSource === undefined;
     const passed = ranCorrectly && honestBoundary;
 

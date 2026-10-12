@@ -7,19 +7,24 @@ import path from 'path';
  *
  * What this boundary actually provides (and what the UI may claim):
  * - separate OS process with an empty environment (no secrets inherited);
+ * - code generation from strings disabled in the runner's own realm, so the
+ *   known node:vm escape (this.constructor.constructor("return process")())
+ *   throws and the workload never gets a handle to `process`/`require`;
  * - Node permission model: no filesystem access beyond reading the runner,
- *   no child processes, no worker threads, no native addons;
+ *   no child processes, no worker threads, no native addons (defence in depth);
  * - V8 heap capped with --max-old-space-size, wall-clock kill on timeout.
  *
- * What it does NOT provide: network egress restriction, cgroups, namespaces,
- * seccomp, or any hardware/TEE isolation.
+ * What it does NOT provide: OS-level network egress restriction (the workload
+ * is given no network API, but nothing at the OS level blocks a process that
+ * escapes), cgroups, namespaces, seccomp, or any hardware/TEE isolation.
  */
 export const SANDBOX_BOUNDARY = {
   kind: 'node-child-process',
   envInherited: false,
   filesystem: 'denied (Node permission model)',
   childProcesses: 'denied (Node permission model)',
-  network: 'NOT restricted',
+  codeGenerationFromStrings: 'disabled in runner realm (blocks the Function-constructor escape)',
+  network: 'NOT restricted at OS level (no network API is exposed to the workload)',
   cgroups: false,
   hardwareIsolation: false,
 } as const;
@@ -71,7 +76,13 @@ export function runInChildSandbox(
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
-      ['--permission', `--allow-fs-read=${runner}`, `--max-old-space-size=${heapLimitMb}`, runner],
+      [
+        '--permission',
+        `--allow-fs-read=${runner}`,
+        '--disallow-code-generation-from-strings',
+        `--max-old-space-size=${heapLimitMb}`,
+        runner,
+      ],
       { env: {}, stdio: ['pipe', 'pipe', 'pipe'] }
     );
 
