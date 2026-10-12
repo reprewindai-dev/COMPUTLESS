@@ -222,12 +222,16 @@ const CAPABILITIES = [
     },
   },
   {
-    name: 'run_substrate_pipeline',
-    description: 'Run the 8-layer pipeline (prototype) for one workload after a CAPPO APPROVED decision.',
-    path: '/api/substrate/pipeline/execute',
+    name: 'run_vkg_package',
+    description: 'Run an action of a digest-checked .vkg package in the child-process sandbox after a CAPPO APPROVED decision.',
+    path: '/api/vkg/execute',
     risk_level: 'high',
     requires_approval: true,
-    input_schema: { type: 'object', properties: { code: { type: 'string' }, inputPayload: { type: 'object' } } },
+    input_schema: {
+      type: 'object',
+      required: ['packageId', 'action'],
+      properties: { packageId: { type: 'string' }, action: { type: 'string' }, inputPayload: { type: 'object' } },
+    },
   },
   {
     name: 'read_dependency_health',
