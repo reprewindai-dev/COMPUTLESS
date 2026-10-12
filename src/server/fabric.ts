@@ -558,6 +558,9 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
       }
     }
 
+    // Handlers read this to report the real authorization instead of a local one.
+    res.locals.governance = { mode, authorization };
+
     const startedAt = new Date();
     const originalJson = res.json.bind(res);
     res.json = ((payload: unknown) => {
