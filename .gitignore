@@ -11,3 +11,6 @@ coverage/
 # log of executions this server ran (src/server/fabricData.ts)
 data/substrate_db.json
 data/executions.json
+
+# No lockfile is committed in this repo; a local npm install creates one.
+package-lock.json
