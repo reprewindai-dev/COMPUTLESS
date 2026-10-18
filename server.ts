@@ -205,8 +205,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[computless] listening on http://0.0.0.0:${PORT}`);
+  // The API has no authentication of its own yet, so it listens on localhost only by default.
+  // In a container set HOST=0.0.0.0 and publish the port on the host's loopback only
+  // (e.g. -p 127.0.0.1:23000:3000).
+  const HOST = process.env.HOST || '127.0.0.1';
+  app.listen(PORT, HOST, () => {
+    console.log(`[computless] listening on http://${HOST}:${PORT}`);
     startCapiRegistration();
   });
 }
