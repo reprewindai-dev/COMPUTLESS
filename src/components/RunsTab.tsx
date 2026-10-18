@@ -43,6 +43,7 @@ export const RunsTab: React.FC<{ onOpenEvent: (id: string) => void }> = ({ onOpe
                   <tr className="text-left text-slate-500 border-b border-slate-800">
                     <Th>time</Th>
                     <Th>route / capability</Th>
+                    <Th>ran on</Th>
                     <Th>outcome</Th>
                     <Th>HTTP</Th>
                     <Th>CAPPO decision</Th>
@@ -59,6 +60,9 @@ export const RunsTab: React.FC<{ onOpenEvent: (id: string) => void }> = ({ onOpe
                       <td className="py-1.5 pr-4">
                         <div className="text-slate-200 whitespace-nowrap">{e.route ?? '—'}</div>
                         <div className="text-[10px] text-slate-500">{e.capabilityId ?? ''}</div>
+                      </td>
+                      <td className="py-1.5 pr-4 whitespace-nowrap text-slate-300" title={e.providerRequestId ? `provider request id ${e.providerRequestId}` : undefined}>
+                        {e.provider ?? '—'}
                       </td>
                       <td className="py-1.5 pr-4 whitespace-nowrap">
                         <span className={e.outcome === 'ran' ? 'text-emerald-300' : e.outcome === 'refused' ? 'text-rose-300' : 'text-slate-300'}>

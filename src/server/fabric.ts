@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import type { NextFunction, Request, Response } from 'express';
+import { listProviders } from './providers/index.js';
 import { SANDBOX_BOUNDARY } from './sandbox.js';
 import { recordExecution } from './fabricData.js';
 
@@ -543,6 +544,8 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
         pglEventId: null,
         durationMs: Date.now() - requestStarted,
         workloadStatus: null,
+        provider: typeof body.provider === 'string' ? body.provider : null,
+        providerRequestId: null,
       });
 
     if (mode === 'disabled') {
@@ -568,6 +571,7 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
         directive: typeof body.directive === 'string' ? body.directive : null,
         request: {
           route: req.path,
+          provider: typeof body.provider === 'string' ? body.provider : 'local',
           code_sha256: sha256Hex(code),
           code: code.slice(0, 16_384),
           input_sha256: sha256Hex(body.inputPayload ?? body.input ?? null),
@@ -605,7 +609,8 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
           mode === 'governed'
             ? 'Authorized by CAPPO before running. CAPPO decisions are unsigned; the directive is caller-declared.'
             : 'local mode: ran WITHOUT CAPPO authorization and nothing was recorded in Gnomledger.',
-        sandbox: SANDBOX_BOUNDARY,
+        // The provider's documented boundary when the handler ran elsewhere, else this server's.
+        sandbox: (payload as Record<string, unknown> | null)?.sandbox ?? SANDBOX_BOUNDARY,
         authorization,
       };
 
@@ -626,6 +631,8 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
           pglEventId: evidence?.eventId ?? null,
           durationMs: Date.now() - requestStarted,
           workloadStatus,
+          provider: typeof p.provider === 'string' ? p.provider : null,
+          providerRequestId: String((p.providerReceipt as Record<string, unknown> | null)?.requestId ?? '') || null,
         });
       };
 
@@ -646,6 +653,8 @@ export function governedExecution(capabilityId: string, riskTier: 'standard' | '
           cappo_decision_hash: authorization?.decisionHash ?? null,
           request_sha256: sha256Hex(body),
           response_sha256: sha256Hex(payload),
+          provider: (payload as Record<string, unknown> | null)?.provider ?? null,
+          provider_receipt: (payload as Record<string, unknown> | null)?.providerReceipt ?? null,
           started_at: startedAt.toISOString(),
           finished_at: new Date().toISOString(),
         },
@@ -697,6 +706,7 @@ export async function fabricStatus() {
     publicBaseUrl: fabricConfig.publicBaseUrl,
     executionMode: fabricConfig.executionMode,
     sandbox: SANDBOX_BOUNDARY,
+    providers: listProviders(),
     configured: {
       capi: Boolean(fabricConfig.capiUrl),
       capiApiKey: Boolean(fabricConfig.capiApiKey),

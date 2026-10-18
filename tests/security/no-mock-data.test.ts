@@ -11,6 +11,10 @@ const serverFiles = [
     .readdirSync(serverDir)
     .filter((f) => f.endsWith('.ts'))
     .map((f) => path.join(serverDir, f)),
+  ...fs
+    .readdirSync(path.join(serverDir, 'providers'))
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => path.join(serverDir, 'providers', f)),
 ];
 
 test('the mock data module is gone', () => {

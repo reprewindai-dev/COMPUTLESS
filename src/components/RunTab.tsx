@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Play, Package, Terminal, Box, ShieldCheck } from 'lucide-react';
-import type { Governance, VkgPackage } from '../ui/types';
+import type { Governance, ProviderInfo, VkgPackage } from '../ui/types';
 import { usePolled, postJson, fmtBytes, fmtMs, fmtTime, type PostResult } from '../ui/api';
 import { Card, TabHeader, ErrorBox, JsonBlock, KV, SourceTag } from './common';
 import { DirectiveControl, GovernanceBlock, SandboxBoundary, UI_AGENT_ID, DEFAULT_DIRECTIVE } from './Governance';
@@ -69,13 +69,16 @@ const SandboxRunner: React.FC<{ directive: string; onOpenEvent: (id: string) => 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<PostResult | null>(null);
   const [sentAt, setSentAt] = useState<string | null>(null);
+  const [providerId, setProviderId] = useState('local');
+  const providersQ = usePolled<{ providers?: ProviderInfo[] }>('/api/providers', 0);
+  const providers = Array.isArray(providersQ.data?.providers) ? providersQ.data!.providers! : [];
   const parsed = parseJson(input);
 
   const run = async () => {
     if (parsed.error) return;
     setRunning(true);
     setResult(null);
-    const body: Record<string, unknown> = { agentId: UI_AGENT_ID, code, inputPayload: parsed.value };
+    const body: Record<string, unknown> = { agentId: UI_AGENT_ID, code, inputPayload: parsed.value, provider: providerId };
     if (directive.trim()) body.directive = directive.trim();
     const t = Number(timeoutMs);
     if (timeoutMs.trim() && Number.isFinite(t) && t > 0) body.timeoutMs = t;
@@ -122,6 +125,30 @@ const SandboxRunner: React.FC<{ directive: string; onOpenEvent: (id: string) => 
             placeholder="server default"
             className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-200 w-40 focus:outline-none focus:border-indigo-500"
           />
+          <label className="text-[11px] font-mono text-slate-400 block pt-2" htmlFor="workload-provider">
+            Run on (from GET /api/providers)
+          </label>
+          <select
+            id="workload-provider"
+            value={providerId}
+            onChange={(e) => setProviderId(e.target.value)}
+            className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
+          >
+            {(providers.length ? providers : [{ id: 'local', name: 'This server', configured: true }]).map((p) => (
+              <option key={p.id} value={p.id} disabled={p.configured === false}>
+                {p.name ?? p.id}
+                {p.configured === false ? ' — not configured' : ''}
+              </option>
+            ))}
+          </select>
+          {providersQ.error && <p className="text-[11px] font-mono text-rose-300">Could not load providers: {providersQ.error}</p>}
+          {providers
+            .filter((p) => p.configured === false)
+            .map((p) => (
+              <p key={p.id} className="text-[11px] font-mono text-slate-500" data-provider-missing={p.id}>
+                {p.name ?? p.id} needs: {(p.missing ?? []).join(', ') || 'configuration'}
+              </p>
+            ))}
         </div>
       </div>
 
@@ -145,14 +172,16 @@ const SandboxRunner: React.FC<{ directive: string; onOpenEvent: (id: string) => 
               <GovernanceBlock governance={gov} status={result.status} onOpenEvent={onOpenEvent} />
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="space-y-2 p-3 rounded-lg bg-slate-950/60 border border-slate-800">
-                  <div className="text-[10px] uppercase font-mono text-slate-400 font-bold">Sandbox result — source: this server</div>
+                  <div className="text-[10px] uppercase font-mono text-slate-400 font-bold">
+                    Result — ran on: <span data-ran-on={d?.provider ?? 'local'}>{d?.provider ?? 'local'}</span>
+                  </div>
                   <KV
                     k="status"
                     v={<span className={status === 'SUCCESS' ? 'text-emerald-300' : 'text-rose-300'} data-workload-status={status}>{status}</span>}
                   />
                   <KV k="execution id" v={d?.executionId} />
                   <KV k="duration (in sandbox)" v={fmtMs(duration)} />
-                  <KV k="memory (child RSS)" v={fmtBytes(memory)} />
+                  <KV k={d?.provider && d.provider !== 'local' ? 'memory (runner RSS)' : 'memory (child RSS)'} v={fmtBytes(memory)} />
                   <KV k="timeout applied" v={fmtMs(d?.timeoutMs)} />
                   <KV k="finished at" v={d?.timestamp ? fmtTime(d.timestamp) : null} />
                   {d?.error && <KV k="error" v={<span className="text-rose-300">{String(d.error)}</span>} />}
@@ -166,6 +195,12 @@ const SandboxRunner: React.FC<{ directive: string; onOpenEvent: (id: string) => 
                     <Box className="h-3 w-3" /> Sandbox boundary (as reported)
                   </div>
                   <SandboxBoundary sandbox={d?.sandbox ?? gov?.sandbox} />
+                  {d?.providerReceipt && (
+                    <>
+                      <div className="text-[10px] uppercase font-mono text-slate-400 font-bold pt-2">Provider receipt (from the provider's own response)</div>
+                      <JsonBlock value={d.providerReceipt} maxHeight="max-h-60" />
+                    </>
+                  )}
                 </div>
               </div>
             </>

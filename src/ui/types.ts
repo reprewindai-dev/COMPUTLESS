@@ -141,6 +141,18 @@ export interface ExecutionEntry {
   pglEventId?: string | null;
   durationMs?: number;
   workloadStatus?: string | null;
+  provider?: string | null;
+  providerRequestId?: string | null;
+}
+
+// ── /api/providers ──────────────────────────────────────────────────────────
+
+export interface ProviderInfo {
+  id: string;
+  name?: string;
+  configured?: boolean;
+  missing?: string[];
+  boundary?: Record<string, unknown>;
 }
 
 export interface ExecutionsResponse {

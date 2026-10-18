@@ -1,0 +1,267 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "COMPUTLESS AWS Lambda workload runner and a dispatcher role that can only invoke it.",
+  "Parameters": {
+    "FunctionName": {
+      "Type": "String",
+      "Default": "computless-runner-js"
+    },
+    "MemorySize": {
+      "Type": "Number",
+      "Default": 1024,
+      "MinValue": 128,
+      "MaxValue": 10240
+    },
+    "ReservedConcurrency": {
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0,
+      "Description": "Cap on concurrent runs. 0 = no reservation (new accounts with a 10-concurrency quota cannot reserve any)."
+    },
+    "DispatcherTrustedPrincipal": {
+      "Type": "String",
+      "Default": "",
+      "Description": "ARN allowed to assume the dispatcher role (e.g. the COMPUTLESS server role). Empty = IAM principals in this account that are granted sts:AssumeRole on it."
+    },
+    "CreateBootstrapUser": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Description": "Create an IAM user whose only permission is assuming the dispatcher role (for a COMPUTLESS server outside AWS). Create its access key yourself; it is never put in stack outputs."
+    }
+  },
+  "Conditions": {
+    "HasReservedConcurrency": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ReservedConcurrency"
+            },
+            0
+          ]
+        }
+      ]
+    },
+    "HasTrustedPrincipal": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DispatcherTrustedPrincipal"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "MakeBootstrapUser": {
+      "Fn::Equals": [
+        {
+          "Ref": "CreateBootstrapUser"
+        },
+        "true"
+      ]
+    }
+  },
+  "Resources": {
+    "RunnerExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "Description": "COMPUTLESS runner: may only write its own logs.",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "own-logs-only",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "RunnerLogGroup",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "RunnerLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${FunctionName}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "RunnerFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "FunctionName"
+        },
+        "Description": "COMPUTLESS workload runner (fresh V8 context per run, no string code generation).",
+        "Runtime": "nodejs22.x",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "index.handler",
+        "MemorySize": {
+          "Ref": "MemorySize"
+        },
+        "Timeout": 20,
+        "Role": {
+          "Fn::GetAtt": [
+            "RunnerExecutionRole",
+            "Arn"
+          ]
+        },
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "RunnerLogGroup"
+          }
+        },
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "HasReservedConcurrency",
+            {
+              "Ref": "ReservedConcurrency"
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Code": {
+          "ZipFile": "'use strict';\n// COMPUTLESS runner for AWS Lambda (inlined as index.js by scripts/\n// build-aws-template.mjs; keep < 4 KB). Each run re-launches this file as a\n// child: empty env (no AWS keys), permission model, heap cap, no string code\n// generation, SIGKILL at the deadline. The workload's context has an\n// inner-realm global, so constructor chains can't reach the outer Function.\nconst vm = require('vm');\nconst { spawn } = require('child_process');\n\nfunction child() {\n  const b = [];\n  process.stdin.on('data', (d) => b.push(d)).on('end', () => {\n    const j = JSON.parse(Buffer.concat(b).toString());\n    const ctx = vm.createContext(vm.constants.DONT_CONTEXTIFY, { codeGeneration: { strings: false, wasm: false } });\n    const collect = vm.runInContext(`(function (s) {\n      const out = [], err = [];\n      const f = (a) => a.map((x) => { try { return typeof x === 'object' ? JSON.stringify(x) : String(x); } catch (e) { return String(x); } }).join(' ');\n      globalThis.input = JSON.parse(s); globalThis.output = {};\n      globalThis.console = { log: (...a) => { out.push(f(a)); }, info: (...a) => { out.push(f(a)); },\n        warn: (...a) => { out.push('[WARN] ' + f(a)); }, error: (...a) => { err.push('[ERROR] ' + f(a)); } };\n      return () => JSON.stringify({ out: out, err: err, output: globalThis.output === undefined ? null : globalThis.output });\n    })`, ctx)(JSON.stringify(j.input));\n    let status = 'SUCCESS', error = null, c = { out: [], err: [], output: null };\n    const t0 = process.hrtime.bigint();\n    try { new vm.Script(j.code, { filename: 'workload.js' }).runInContext(ctx, { timeout: j.timeoutMs }); }\n    catch (e) { status = e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' ? 'TERMINATED_TIMEOUT' : 'RUNTIME_ERROR'; error = { message: String((e && e.message) || e).slice(0, 2000), code: (e && e.code) || null }; }\n    const durationMs = Number(process.hrtime.bigint() - t0) / 1e6;\n    try { c = JSON.parse(collect()); } catch (e) { if (!error) { status = 'RUNTIME_ERROR'; error = { message: 'output is not JSON-serialisable', code: null }; } }\n    process.stdout.write(JSON.stringify({ status, error, durationMs, stdout: c.out, stderr: c.err, output: c.output, rssBytes: process.memoryUsage().rss }));\n    process.exit(0);\n  });\n}\n\nfunction run(job) {\n  return new Promise((resolve) => {\n    const p = spawn(process.execPath, ['--permission', '--allow-fs-read=' + __filename, '--disallow-code-generation-from-strings', '--max-old-space-size=128', __filename],\n      { env: { COMPUTLESS_CHILD: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });\n    const o = [], t = Date.now();\n    let killed = false;\n    const timer = setTimeout(() => { killed = true; p.kill('SIGKILL'); }, job.timeoutMs + 1000);\n    p.stdout.on('data', (d) => o.push(d));\n    p.on('close', (code, sig) => {\n      clearTimeout(timer);\n      try { return resolve(JSON.parse(Buffer.concat(o).toString())); } catch (e) {}\n      const status = killed ? 'TERMINATED_TIMEOUT' : code === 134 || sig === 'SIGABRT' ? 'MEMORY_LIMIT' : 'SANDBOX_FAILURE';\n      resolve({ status, error: { message: `child exited (code ${code}, signal ${sig})`, code: null }, durationMs: Date.now() - t, rssBytes: null });\n    });\n    p.stdin.end(JSON.stringify(job));\n  });\n}\n\nif (process.env.COMPUTLESS_CHILD === '1') child();\n\nexports.handler = async (event, context) => {\n  const e = event || {};\n  const r = await run({ code: String(e.code || ''), input: e.input || {}, timeoutMs: Math.max(1, Math.min(Number(e.timeoutMs) || 3000, 10000)) });\n  const c = context || {};\n  return {\n    status: r.status, error: r.error, durationMs: r.durationMs, rssBytes: r.rssBytes,\n    stdout: (r.stdout || []).slice(0, 1000), stderr: (r.stderr || []).slice(0, 1000), output: r.output === undefined ? null : r.output,\n    runtime: { node: process.version, region: process.env.AWS_REGION || null, functionVersion: c.functionVersion || null, memoryLimitMb: Number(c.memoryLimitInMB) || null, awsRequestId: c.awsRequestId || null },\n  };\n};\n"
+        }
+      }
+    },
+    "DispatcherRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "Description": "COMPUTLESS dispatcher: may only invoke the runner function.",
+        "MaxSessionDuration": 3600,
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::If": [
+                    "HasTrustedPrincipal",
+                    {
+                      "Ref": "DispatcherTrustedPrincipal"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+                    }
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "invoke-runner-only",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "RunnerFunction",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BootstrapUser": {
+      "Type": "AWS::IAM::User",
+      "Condition": "MakeBootstrapUser",
+      "Properties": {
+        "Policies": [
+          {
+            "PolicyName": "assume-dispatcher-only",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "sts:AssumeRole",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "DispatcherRole",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "FunctionArn": {
+      "Description": "Set as COMPUTLESS_AWS_FUNCTION_ARN",
+      "Value": {
+        "Fn::GetAtt": [
+          "RunnerFunction",
+          "Arn"
+        ]
+      }
+    },
+    "DispatcherRoleArn": {
+      "Description": "Set as COMPUTLESS_AWS_ROLE_ARN",
+      "Value": {
+        "Fn::GetAtt": [
+          "DispatcherRole",
+          "Arn"
+        ]
+      }
+    },
+    "BootstrapUserName": {
+      "Condition": "MakeBootstrapUser",
+      "Description": "Create one access key for this user (IAM console) and store it in the server secret store",
+      "Value": {
+        "Ref": "BootstrapUser"
+      }
+    }
+  }
+}
