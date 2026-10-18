@@ -1,185 +1,101 @@
 import React from 'react';
-import { ShieldCheck, Cpu, Layers, RefreshCw, Zap, ExternalLink } from 'lucide-react';
+import { Cpu, AlertTriangle } from 'lucide-react';
+import type { FabricStatusState } from './FabricStatus';
+import { stateText, stateTone } from './common';
+import { fmtTime } from '../ui/api';
+import { isLocalMode } from './Governance';
 
-interface HeaderProps {
-  activeTab: string;
-  setActiveTab: (tab: string) => void;
-  isBackendConnected: boolean;
-  onOpenArchitectureModal: () => void;
-  pglCount: number;
-}
+export const TABS: { id: string; label: string }[] = [
+  { id: 'fabric', label: 'Fabric' },
+  { id: 'services', label: 'Services' },
+  { id: 'capabilities', label: 'Capabilities' },
+  { id: 'run', label: 'Run' },
+  { id: 'evidence', label: 'Evidence' },
+  { id: 'runs', label: 'Runs' },
+  { id: 'security', label: 'Security tests' },
+];
 
-export const Header: React.FC<HeaderProps> = ({
-  activeTab,
-  setActiveTab,
-  isBackendConnected,
-  onOpenArchitectureModal,
-  pglCount,
-}) => {
-  return (
-    <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Brand Logo & Title */}
-          <div className="flex items-center space-x-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-sky-500 to-emerald-400 p-0.5 shadow-lg shadow-indigo-500/20">
-              <div className="h-full w-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-                <Cpu className="h-5 w-5 text-sky-400" />
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="text-lg font-bold tracking-tight text-white">COMPUTLESS</span>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">
-                  CLOUD
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Decentralized Substrate &amp; Autonomous Agent Governance
-              </p>
-            </div>
-          </div>
-
-          {/* Quick Metrics & Architecture Trigger */}
-          <div className="hidden lg:flex items-center space-x-4 text-xs font-mono">
-            <button
-              onClick={onOpenArchitectureModal}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-800 text-slate-200 border border-slate-700 transition cursor-pointer"
-            >
-              <Layers className="h-3.5 w-3.5 text-indigo-400" />
-              <span>8-Layer Substrate Stack</span>
-            </button>
-
-            <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800/50 border border-slate-800 text-slate-300">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Invariants Active: <strong className="text-emerald-400">403 &amp; 503</strong></span>
-            </div>
-
-            <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800/50 border border-slate-800 text-slate-300">
-              <Zap className="h-3.5 w-3.5 text-sky-400" />
-              <span>PGL Proofs: <strong className="text-sky-400">{pglCount}</strong></span>
-            </div>
-
-            <div className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
-              <span className={`h-2 w-2 rounded-full ${isBackendConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
-              <span className="text-slate-400">{isBackendConnected ? 'HTTP/REST Live' : 'Connecting...'}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Navigation Tabs */}
-        <div className="flex space-x-1 border-t border-slate-800/80 overflow-x-auto py-2 scrollbar-none">
-          <button
-            onClick={() => setActiveTab('topology')}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'topology'
-                ? 'bg-gradient-to-r from-sky-600/40 via-indigo-600/40 to-emerald-600/30 text-white border border-sky-400/50 shadow-lg shadow-sky-500/10'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <span>Cloud Compute Nodes</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-mono font-bold">
-              Substrate
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('fpi')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'fpi'
-                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Federation Providers (FPI)</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-emerald-500/20 text-emerald-300 rounded font-mono font-bold">
-              FPI
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('simulator')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'simulator'
-                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Two Invariants Router</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-indigo-500/20 text-indigo-300 rounded font-mono">403/503</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('herdr')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'herdr'
-                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Herdr Agent Loop</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-sky-500/20 text-sky-300 rounded font-mono">Recursion</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('ledger')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'ledger'
-                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Evidence &amp; PGL Ledger</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('architecture8')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'architecture8'
-                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>8-Layer Substrate Pipeline</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('amplification')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'amplification'
-                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-400/40'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Amplification Ladder</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('vkgSubstrate')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'vkgSubstrate'
-                ? 'bg-gradient-to-r from-indigo-600/50 to-purple-600/40 text-white border border-indigo-400/50 shadow-md shadow-indigo-500/10'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/50'
-            }`}
-          >
-            <span>Runtime Substrate</span>
-            <span className="px-1.5 py-0.5 text-[10px] bg-purple-500/20 text-purple-300 rounded font-mono font-bold">
-              .vkg / Leases
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('api')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer flex items-center space-x-2 whitespace-nowrap ${
-              activeTab === 'api'
-                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-            }`}
-          >
-            <span>REST API &amp; MCP Bench</span>
-          </button>
+const FabricBanner: React.FC<{ fabric: FabricStatusState; onOpen: () => void }> = ({ fabric, onOpen }) => {
+  const { data, error } = fabric;
+  if (error && !data) {
+    return (
+      <div className="bg-rose-950/40 border-b border-rose-500/30 text-rose-200 text-[11px] font-mono">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-1.5 flex items-center gap-2">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span>COMPUTLESS API unreachable: /api/fabric/status failed ({error}).</span>
         </div>
       </div>
-    </header>
+    );
+  }
+  const mode = String(data?.executionMode ?? '');
+  const modeTone = mode === 'governed' ? 'text-emerald-300' : isLocalMode(mode) ? 'text-amber-300' : 'text-slate-300';
+  const reg = String(data?.registration?.state ?? '');
+  const overall = String(data?.overall ?? '');
+  const rt = stateTone(reg);
+  const ot = stateTone(overall);
+  return (
+    <div className="bg-slate-950 border-b border-slate-800 text-[11px] font-mono" data-banner>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-1.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-slate-400">
+        <button onClick={onOpen} className="flex items-center gap-1.5 hover:text-slate-200 cursor-pointer">
+          <span>execution mode:</span>
+          <strong className={modeTone} data-banner-mode>
+            {data ? mode || 'not reported' : 'checking…'}
+          </strong>
+          {isLocalMode(mode) && <span className="text-amber-300/80">(runs without authorization)</span>}
+          {mode === 'disabled' && <span>(nothing runs)</span>}
+        </button>
+        <button onClick={onOpen} className="flex items-center gap-1.5 hover:text-slate-200 cursor-pointer">
+          <span>cAPI registration:</span>
+          <span className={`h-2 w-2 rounded-full ${rt.dot}`} />
+          <span className={rt.text}>{data ? reg || 'not reported' : 'checking…'}</span>
+        </button>
+        <button onClick={onOpen} className="flex items-center gap-1.5 hover:text-slate-200 cursor-pointer">
+          <span>dependencies:</span>
+          <span className={`h-2 w-2 rounded-full ${ot.dot}`} />
+          <span className={ot.text}>{data ? stateText(overall) : 'checking…'}</span>
+        </button>
+        {error && data && <span className="text-rose-300">last refresh failed ({error}); showing status from {fmtTime(data.checkedAt)}</span>}
+      </div>
+    </div>
   );
 };
+
+export const Header: React.FC<{ activeTab: string; setActiveTab: (t: string) => void; fabric: FabricStatusState }> = ({
+  activeTab,
+  setActiveTab,
+  fabric,
+}) => (
+  <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
+    <FabricBanner fabric={fabric} onOpen={() => setActiveTab('fabric')} />
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="flex items-center h-16 gap-3">
+        <div className="h-10 w-10 shrink-0 rounded-xl bg-gradient-to-tr from-indigo-600 via-sky-500 to-emerald-400 p-0.5 shadow-lg shadow-indigo-500/20">
+          <div className="h-full w-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+            <Cpu className="h-5 w-5 text-sky-400" />
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-lg font-bold tracking-tight text-white">COMPUTLESS</div>
+          <p className="text-xs text-slate-400 truncate">COMPUTLESS — governed workload runner on the Veklom fabric</p>
+        </div>
+      </div>
+
+      <nav className="flex gap-1 border-t border-slate-800/80 overflow-x-auto py-2">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            data-tab={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer whitespace-nowrap ${
+              activeTab === tab.id
+                ? 'bg-indigo-600/30 text-indigo-200 border border-indigo-400/40'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  </header>
+);
