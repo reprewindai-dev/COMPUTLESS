@@ -14,3 +14,7 @@ data/executions.json
 
 # No lockfile is committed in this repo; a local npm install creates one.
 package-lock.json
+
+# Written by cloud/aws-lambda/deploy.sh; the secrets file holds an AWS access key.
+computless-aws.env
+computless-aws.secrets.env

@@ -184,3 +184,24 @@ test('a Lambda-level timeout and an SDK failure are reported, not hidden', async
 test('REPORT parsing tolerates a missing log tail', () => {
   assert.equal(parseLambdaReport(null).billedDurationMs, null);
 });
+
+// ── Setup files ─────────────────────────────────────────────────────────────
+
+test('env template and deploy.sh name exactly the variables the adapter reads', () => {
+  const adapter = fs.readFileSync(path.join(root, 'src', 'server', 'providers', 'awsLambda.ts'), 'utf8');
+  const read = new Set([...adapter.matchAll(/env\('([A-Z_]+)'\)/g)].map((m) => m[1]));
+  const example = fs.readFileSync(path.join(root, 'cloud', 'aws-lambda', 'computless-aws.env.example'), 'utf8');
+  const deploy = fs.readFileSync(path.join(root, 'cloud', 'aws-lambda', 'deploy.sh'), 'utf8');
+  for (const name of ['COMPUTLESS_AWS_FUNCTION_ARN', 'COMPUTLESS_AWS_ROLE_ARN', 'AWS_REGION']) {
+    assert.ok(read.has(name), `adapter reads ${name}`);
+    assert.match(example, new RegExp(`^${name}=`, 'm'), `template sets ${name}`);
+    assert.match(deploy, new RegExp(`^${name}=`, 'm'), `deploy.sh writes ${name}`);
+  }
+  assert.doesNotMatch(example, /^AWS_SECRET_ACCESS_KEY=\S/m, 'the template carries no secret value');
+});
+
+test('deploy.sh and the smoke script parse', async () => {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync('bash', ['-n', path.join(root, 'cloud', 'aws-lambda', 'deploy.sh')]);
+  execFileSync(process.execPath, ['--check', path.join(root, 'scripts', 'aws-smoke.mjs')]);
+});
