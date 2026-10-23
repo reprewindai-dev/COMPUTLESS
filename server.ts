@@ -9,6 +9,7 @@ import { getLastAdversarialReport, listAdversarialTests, runAdversarialTestSuite
 import { registerFabricRoutes, startCapiRegistration, governedExecution } from './src/server/fabric.js';
 import { registerFabricDataRoutes } from './src/server/fabricData.js';
 import { SANDBOX_BOUNDARY } from './src/server/sandbox.js';
+import { getProvider, listProviders, runOnProvider } from './src/server/providers/index.js';
 import type { SandboxExecutionRequest, StoredVkgPackage, VkgPackage } from './src/types.js';
 
 const MAX_SANDBOX_TIMEOUT_MS = 10_000;
@@ -65,6 +66,16 @@ async function startServer() {
       if (body.timeoutMs !== undefined && (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))) {
         return badRequest(req, res, "'timeoutMs' must be a number.");
       }
+      const providerId = body.provider ?? 'local';
+      const provider = typeof providerId === 'string' ? getProvider(providerId) : null;
+      if (!provider) return badRequest(req, res, `'provider' must be one of: ${listProviders().map((p) => p.id).join(', ')}.`);
+      if (!provider.configured) {
+        return res
+          .status(503)
+          .json(
+            buildProblemDetails('provider-not-configured', `${provider.name} is not configured`, 503, `Missing: ${provider.missing.join(', ')}.`, req.originalUrl)
+          );
+      }
       next();
     },
     governedExecution('computless.sandbox.execute'),
@@ -73,6 +84,36 @@ async function startServer() {
       const timeoutMs = Math.max(1, Math.min(Math.round(body.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS), MAX_SANDBOX_TIMEOUT_MS));
       const governance = governanceOf(res);
       const executionId = 'exec-sbx-' + crypto.randomBytes(6).toString('hex');
+
+      const provider = getProvider(body.provider ?? 'local')!;
+
+      if (provider.id !== 'local') {
+        const run = await runOnProvider(provider.id, { code: body.code, input: body.inputPayload ?? {}, timeoutMs });
+        const stdout = [...run.stdout, ...run.stderr];
+        if (run.error) stdout.push(`[FAULT] ${run.error.message}`);
+        return res.status(run.status === 'PROVIDER_ERROR' ? 502 : 200).json({
+          executionId,
+          status: run.status,
+          success: run.status === 'SUCCESS',
+          stdout,
+          outputData:
+            run.status === 'SUCCESS'
+              ? run.output && typeof run.output === 'object'
+                ? run.output
+                : { value: run.output }
+              : { error: run.error?.message ?? 'Execution fault', code: run.error?.code ?? run.status },
+          rssBytes: run.rssBytes,
+          memoryUsageBytes: run.rssBytes ?? 0,
+          executionDurationMs: run.durationMs,
+          timeoutMs,
+          timestamp: new Date().toISOString(),
+          provider: provider.id,
+          providerReceipt: run.receipt,
+          sandbox: provider.boundary,
+          mode: governance.mode,
+          authorization: governance.authorization,
+        });
+      }
 
       const r = await executeInIsolatedVMSandbox(body.code, body.inputPayload ?? {}, timeoutMs);
 
@@ -87,12 +128,16 @@ async function startServer() {
         executionDurationMs: r.durationMs,
         timeoutMs,
         timestamp: new Date().toISOString(),
+        provider: 'local',
+        providerReceipt: null,
         sandbox: SANDBOX_BOUNDARY,
         mode: governance.mode,
         authorization: governance.authorization,
       });
     }
   );
+
+  app.get('/api/providers', (_req, res) => res.json({ providers: listProviders() }));
 
   // ── .vkg packages ──────────────────────────────────────────────────────────
   app.get('/api/vkg/packages', (_req, res) => {

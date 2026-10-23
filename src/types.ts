@@ -15,6 +15,8 @@ export interface SandboxExecutionRequest {
   inputPayload?: Record<string, unknown>;
   /** Clamped to 1..10000 ms. Default 3000. */
   timeoutMs?: number;
+  /** Where to run it: 'local' (default) or a configured cloud provider, e.g. 'aws-lambda'. */
+  provider?: string;
 }
 
 export type SandboxStatus = 'SUCCESS' | 'TERMINATED_TIMEOUT' | 'RUNTIME_ERROR' | 'MEMORY_LIMIT' | 'SANDBOX_FAILURE';

@@ -135,6 +135,10 @@ export interface ExecutionEntry {
   pglEventId: string | null;
   durationMs: number;
   workloadStatus: string | null;
+  /** Where the workload ran ('local', 'aws-lambda'); null for routes without a provider. */
+  provider: string | null;
+  /** The provider's own id for the run (e.g. the Lambda request id). */
+  providerRequestId: string | null;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'executions.json');
